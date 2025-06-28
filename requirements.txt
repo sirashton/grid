@@ -1,0 +1,3 @@
+# Core dependencies for Grid Tracker
+# We'll add more as we implement specific features 
+requests==2.31.0 

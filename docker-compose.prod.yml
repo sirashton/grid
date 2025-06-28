@@ -1,0 +1,13 @@
+services:
+  grid-tracker:
+    build: .
+    container_name: grid-tracker-prod
+    volumes:
+      - /opt/grid-tracker/database:/data
+      - /opt/grid-tracker/logs:/logs
+    environment:
+      - CARBON_INTENSITY_COLLECTION_INTERVAL=120  # 2 minutes for production
+      - HEALTH_CHECK_INTERVAL=1800                 # 30 minutes for production
+      - MAIN_LOOP_INTERVAL=30                     # 30 seconds for production
+      - PYTHONUNBUFFERED=1
+    restart: unless-stopped 
