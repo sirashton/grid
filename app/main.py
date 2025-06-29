@@ -15,6 +15,7 @@ from config import Config
 from database import Database
 from carbon_intensity_api import CarbonIntensityAPI
 from data_gap_detector import DataGapDetector
+from utils.backfill_utils import run_backfill_cycle
 
 # Configure logging
 logging.basicConfig(
@@ -43,6 +44,7 @@ class GridTracker:
         self.last_elexon_bm_reports_collection = None
         self.last_neso_data_portal_collection = None
         self.last_health_check = None
+        self.last_backfill = None
         
         # Control flag for graceful shutdown
         self.running = True
@@ -71,6 +73,14 @@ class GridTracker:
         
         time_since_last = time.time() - self.last_health_check
         return time_since_last >= self.config.HEALTH_CHECK_INTERVAL
+    
+    def should_run_backfill(self) -> bool:
+        """Check if it's time to run backfill"""
+        if not self.last_backfill:
+            return True
+        
+        time_since_last = time.time() - self.last_backfill
+        return time_since_last >= self.config.BACKFILL_INTERVAL
     
     def collect_carbon_intensity_data(self) -> bool:
         """Collect carbon intensity data with smart gap detection"""
@@ -311,6 +321,41 @@ class GridTracker:
         
         return gap_ranges
     
+    def run_backfill(self) -> bool:
+        """Run backfill for all configured data sources"""
+        try:
+            logger.info("Starting backfill cycle...")
+            print("Starting backfill cycle...")
+            
+            # Set up API functions mapping
+            api_functions = {
+                'carbon_intensity_30min_data': self.carbon_intensity_api.get_intensity_data
+            }
+            
+            # Set up database insert functions mapping
+            db_insert_functions = {
+                'carbon_intensity_30min_data': self.db.insert_carbon_intensity_data
+            }
+            
+            # Run backfill cycle
+            success = run_backfill_cycle(
+                backfill_configs=self.config.BACKFILL_CONFIG,
+                api_functions=api_functions,
+                db_insert_functions=db_insert_functions
+            )
+            
+            if success:
+                print("Backfill cycle completed successfully")
+            else:
+                print("Backfill cycle failed")
+            
+            return success
+            
+        except Exception as e:
+            logger.error(f"Backfill failed: {e}")
+            print(f"Backfill failed: {e}")
+            return False
+    
     def main_loop(self):
         """Main scheduling loop"""
         logger.info("Starting Grid Tracker main loop...")
@@ -327,8 +372,6 @@ class GridTracker:
                         print(f"Carbon intensity collection completed at {datetime.now()}")
                     else:
                         print(f"Carbon intensity collection failed at {datetime.now()}")
-                # else:
-                #     print(f"Carbon intensity collection not due at {datetime.now()}")
                 
                 if self.should_run_health_check():
                     success = self.run_health_check()
@@ -337,8 +380,14 @@ class GridTracker:
                         print(f"Health check completed at {datetime.now()}")
                     else:
                         print(f"Health check failed at {datetime.now()}")
-                # else:
-                #     print(f"Health check not due at {datetime.now()}")
+                
+                if self.should_run_backfill():
+                    success = self.run_backfill()
+                    self.last_backfill = time.time()
+                    if success:
+                        print(f"Backfill completed at {datetime.now()}")
+                    else:
+                        print(f"Backfill failed at {datetime.now()}")
                 
                 # Sleep for a short interval
                 time.sleep(self.config.MAIN_LOOP_INTERVAL)
