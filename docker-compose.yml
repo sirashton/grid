@@ -7,7 +7,7 @@ services:
       - ./volumes/logs:/logs
     environment:
       - CARBON_INTENSITY_COLLECTION_INTERVAL=60  # 1 minute for local testing
-      - HEALTH_CHECK_INTERVAL=900 #15 min
+      - HEALTH_CHECK_INTERVAL=120 #15 min
       - MAIN_LOOP_INTERVAL=10
       - PYTHONUNBUFFERED=1
     restart: unless-stopped

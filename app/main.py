@@ -9,10 +9,12 @@ import logging
 import signal
 from datetime import datetime, timezone, timedelta
 from pathlib import Path
+from typing import List, Tuple
 
 from config import Config
 from database import Database
 from carbon_intensity_api import CarbonIntensityAPI
+from data_gap_detector import DataGapDetector
 
 # Configure logging
 logging.basicConfig(
@@ -34,6 +36,7 @@ class GridTracker:
         self.config = Config()
         self.db = Database()
         self.carbon_intensity_api = CarbonIntensityAPI()
+        self.gap_detector = DataGapDetector()
         
         # Track last collection times for each data source
         self.last_carbon_intensity_collection = None
@@ -94,7 +97,7 @@ class GridTracker:
                     # Check if data is fresh enough (< 60 mins old)
                     time_since_latest = current_time - latest_timestamp
                     
-                    if time_since_latest.total_seconds() < 3600:  # 60 minutes
+                    if time_since_latest.total_seconds() < 1800:  # 30 minutes
                         print(f"Carbon intensity data is fresh ({time_since_latest.total_seconds()/60:.1f} minutes old), skipping collection")
                         logger.info(f"Carbon intensity data is fresh ({time_since_latest.total_seconds()/60:.1f} minutes old), skipping collection")
                         return True
@@ -155,6 +158,30 @@ class GridTracker:
             if db_healthy:
                 stats = self.db.get_carbon_intensity_stats()
                 print(f"Database healthy: {stats['total_records']} carbon intensity records")
+                
+                # Check for data gaps
+                gaps = self.gap_detector.detect_data_gaps(
+                    table_name='carbon_intensity_30min_data',
+                    granularity_minutes=30
+                )
+                
+                if gaps:
+                    print(f"Found {len(gaps)} data gaps in carbon intensity data:")
+                    for gap_start, gap_end in gaps[:5]:  # Show first 5 gaps
+                        print(f"  Missing: {gap_start.isoformat()}")
+                    if len(gaps) > 5:
+                        print(f"  ... and {len(gaps) - 5} more gaps")
+                    
+                    # Attempt to fill the gaps
+                    print("Attempting to fill gaps...")
+                    gap_fill_success = self.fill_data_gaps('carbon_intensity_30min_data', 30)
+                    if gap_fill_success:
+                        print("Gap filling completed")
+                    else:
+                        print("Gap filling failed")
+                else:
+                    print("No data gaps detected in carbon intensity data")
+                
             else:
                 print("Database health check failed")
             
@@ -171,6 +198,118 @@ class GridTracker:
         except Exception as e:
             logger.error(f"Health check failed: {e}")
             return False
+    
+    def detect_and_report_gaps(self, table_name: str, granularity_minutes: int) -> List[Tuple[datetime, datetime]]:
+        """Detect and report gaps in data"""
+        try:
+            gaps = self.gap_detector.detect_data_gaps(
+                table_name=table_name,
+                granularity_minutes=granularity_minutes
+            )
+            
+            if gaps:
+                logger.info(f"Found {len(gaps)} gaps in {table_name}")
+                print(f"Found {len(gaps)} gaps in {table_name}:")
+                for gap_start, gap_end in gaps[:10]:  # Show first 10 gaps
+                    print(f"  Missing: {gap_start.isoformat()}")
+                if len(gaps) > 10:
+                    print(f"  ... and {len(gaps) - 10} more gaps")
+            else:
+                logger.info(f"No gaps found in {table_name}")
+                print(f"No gaps found in {table_name}")
+            
+            return gaps
+            
+        except Exception as e:
+            logger.error(f"Error detecting gaps in {table_name}: {e}")
+            return []
+    
+    def fill_data_gaps(self, table_name: str, granularity_minutes: int) -> bool:
+        """Detect and fill gaps in data"""
+        try:
+            logger.info(f"Checking for gaps in {table_name}...")
+            
+            # Detect gaps
+            gaps = self.gap_detector.detect_data_gaps(
+                table_name=table_name,
+                granularity_minutes=granularity_minutes
+            )
+            
+            if not gaps:
+                logger.info(f"No gaps found in {table_name}")
+                return True
+            
+            logger.info(f"Found {len(gaps)} gaps in {table_name}, attempting to fill...")
+            print(f"Found {len(gaps)} gaps in carbon intensity data, attempting to fill...")
+            
+            # Group consecutive gaps to minimize API calls
+            gap_ranges = self._group_consecutive_gaps(gaps, granularity_minutes)
+            
+            total_filled = 0
+            for gap_start, gap_end in gap_ranges:
+                try:
+                    # Fetch data for this gap range
+                    data_points = self.carbon_intensity_api.get_intensity_data(gap_start, gap_end)
+                    
+                    if data_points:
+                        # Store the data
+                        inserted_count = 0
+                        for point in data_points:
+                            success = self.db.insert_carbon_intensity_data(
+                                timestamp=point['timestamp'],
+                                emissions=point['emissions']
+                            )
+                            if success:
+                                inserted_count += 1
+                        
+                        total_filled += inserted_count
+                        logger.info(f"Filled gap {gap_start} to {gap_end}: {inserted_count} points")
+                        print(f"  Filled gap {gap_start.strftime('%Y-%m-%d %H:%M')} to {gap_end.strftime('%Y-%m-%d %H:%M')}: {inserted_count} points")
+                    else:
+                        logger.warning(f"No data received for gap {gap_start} to {gap_end}")
+                        print(f"  No data received for gap {gap_start.strftime('%Y-%m-%d %H:%M')} to {gap_end.strftime('%Y-%m-%d %H:%M')}")
+                        
+                except Exception as e:
+                    logger.error(f"Error filling gap {gap_start} to {gap_end}: {e}")
+                    print(f"  Error filling gap {gap_start.strftime('%Y-%m-%d %H:%M')} to {gap_end.strftime('%Y-%m-%d %H:%M')}: {e}")
+            
+            logger.info(f"Gap filling complete: {total_filled} points filled")
+            print(f"Gap filling complete: {total_filled} points filled")
+            return True
+            
+        except Exception as e:
+            logger.error(f"Error in gap filling: {e}")
+            return False
+    
+    def _group_consecutive_gaps(self, gaps: List[Tuple[datetime, datetime]], granularity_minutes: int) -> List[Tuple[datetime, datetime]]:
+        """Group consecutive gaps into ranges to minimize API calls"""
+        if not gaps:
+            return []
+        
+        # Sort gaps by start time
+        sorted_gaps = sorted(gaps, key=lambda x: x[0])
+        
+        gap_ranges = []
+        current_start = sorted_gaps[0][0]
+        current_end = sorted_gaps[0][1]
+        
+        for gap_start, gap_end in sorted_gaps[1:]:
+            # Check if this gap is consecutive with the current range
+            expected_next = current_end + timedelta(minutes=granularity_minutes)
+            
+            if gap_start == expected_next:
+                # Consecutive gap, extend the range
+                current_end = gap_end
+            else:
+                # Non-consecutive gap, save current range and start new one
+                gap_ranges.append((current_start, current_end))
+                current_start = gap_start
+                current_end = gap_end
+        
+        # Add the last range
+        gap_ranges.append((current_start, current_end))
+        
+        return gap_ranges
     
     def main_loop(self):
         """Main scheduling loop"""

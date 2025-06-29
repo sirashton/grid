@@ -32,6 +32,11 @@ class CarbonIntensityAPI:
             List of data points with timestamp and emissions
         """
         try:
+            # If start and end times are the same, add a minute to end time
+            # to ensure we get at least one data point from the API
+            if start_time == end_time:
+                end_time = end_time + timedelta(minutes=1)
+            
             # Format timestamps for API
             start_str = start_time.strftime('%Y-%m-%dT%H:%MZ')
             end_str = end_time.strftime('%Y-%m-%dT%H:%MZ')
@@ -54,7 +59,7 @@ class CarbonIntensityAPI:
             data_points = []
             for i, entry in enumerate(data.get('data', [])):
                 # print(f"DEBUG: Entry {i}: {entry}")
-                timestamp = entry.get('from')
+                timestamp = entry.get('to')  # Use 'to' timestamp as the main identifier
                 intensity = entry.get('intensity', {})
                 emissions = intensity.get('actual', intensity.get('forecast'))
                 
@@ -70,8 +75,11 @@ class CarbonIntensityAPI:
             logger.info(f"Retrieved {len(data_points)} carbon intensity data points from API")
             print(f"Retrieved {len(data_points)} carbon intensity data points from API")
             # Print the max and min timestamps of the received data
-            print(f"Max timestamp: {max(data_points, key=lambda x: x['timestamp'])}")
-            print(f"Min timestamp: {min(data_points, key=lambda x: x['timestamp'])}")
+            if data_points:
+                print(f"Max timestamp: {max(data_points, key=lambda x: x['timestamp'])}")
+                print(f"Min timestamp: {min(data_points, key=lambda x: x['timestamp'])}")
+            else:
+                print("No data points received from API")
             return data_points
             
         except requests.exceptions.RequestException as e:
