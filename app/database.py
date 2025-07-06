@@ -33,9 +33,18 @@ class Database:
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
                     timestamp DATETIME NOT NULL UNIQUE,
                     emissions INTEGER NOT NULL,
+                    is_forecast BOOLEAN,
                     created_at DATETIME DEFAULT CURRENT_TIMESTAMP
                 )
             """)
+            
+            # Add is_forecast column if it doesn't exist (migration)
+            try:
+                cursor.execute("ALTER TABLE carbon_intensity_30min_data ADD COLUMN is_forecast BOOLEAN")
+                logger.info("Added is_forecast column to carbon_intensity_30min_data table")
+            except sqlite3.OperationalError:
+                # Column already exists
+                pass
             
             # Create index for efficient queries
             cursor.execute("""
@@ -46,13 +55,14 @@ class Database:
             conn.commit()
             logger.info(f"Database initialized: {self.db_path}")
     
-    def insert_carbon_intensity_data(self, timestamp: str, emissions: int) -> bool:
+    def insert_carbon_intensity_data(self, timestamp: str, emissions: int, is_forecast: bool = False) -> bool:
         """
         Insert carbon intensity data
         
         Args:
             timestamp: ISO format timestamp string
             emissions: Carbon intensity in gCO2/kWh
+            is_forecast: Whether this is a forecast value (True) or actual value (False)
             
         Returns:
             True if successful, False otherwise
@@ -60,14 +70,36 @@ class Database:
         try:
             with sqlite3.connect(self.db_path) as conn:
                 cursor = conn.cursor()
+                
+                # Check if record exists and whether it's a forecast
                 cursor.execute("""
-                    INSERT OR REPLACE INTO carbon_intensity_30min_data (timestamp, emissions)
-                    VALUES (?, ?)
-                """, (timestamp, emissions))
+                    SELECT is_forecast FROM carbon_intensity_30min_data 
+                    WHERE timestamp = ?
+                """, (timestamp,))
+                existing_record = cursor.fetchone()
+                
+                if existing_record:
+                    existing_is_forecast = existing_record[0]
+                    
+                    # If existing record is actual and new record is forecast, don't overwrite
+                    if existing_is_forecast == 0 and is_forecast:
+                        logger.debug(f"Skipping forecast update for {timestamp} - actual value already exists")
+                        return True
+                    
+                    # If existing record is forecast and new record is actual, update
+                    if existing_is_forecast == 1 and not is_forecast:
+                        logger.info(f"Updating forecast to actual for {timestamp}: {emissions}")
+                
+                # Insert or replace the record
+                cursor.execute("""
+                    INSERT OR REPLACE INTO carbon_intensity_30min_data (timestamp, emissions, is_forecast)
+                    VALUES (?, ?, ?)
+                """, (timestamp, emissions, is_forecast))
                 conn.commit()
                 
                 if cursor.rowcount > 0:
-                    logger.debug(f"Inserted/updated carbon intensity data: {timestamp} = {emissions}")
+                    data_type = "forecast" if is_forecast else "actual"
+                    logger.debug(f"Inserted/updated carbon intensity data ({data_type}): {timestamp} = {emissions}")
                     return True
                 else:
                     logger.debug(f"Carbon intensity data unchanged: {timestamp}")
@@ -160,6 +192,35 @@ class Database:
         except Exception as e:
             logger.error(f"Failed to get last carbon intensity collection time: {e}")
             return None
+    
+    def get_recent_forecast_records(self, hours: int = 24) -> List[Dict]:
+        """
+        Get recent forecast records that might need to be updated with actuals
+        
+        Args:
+            hours: Number of hours to look back (default 24)
+            
+        Returns:
+            List of dictionaries with timestamp and emissions
+        """
+        try:
+            with sqlite3.connect(self.db_path) as conn:
+                conn.row_factory = sqlite3.Row
+                cursor = conn.cursor()
+                
+                cursor.execute("""
+                    SELECT timestamp, emissions
+                    FROM carbon_intensity_30min_data
+                    WHERE is_forecast = 1 
+                    AND timestamp > datetime('now', '-{} hours')
+                    ORDER BY timestamp DESC
+                """.format(hours))
+                
+                return [dict(row) for row in cursor.fetchall()]
+                
+        except Exception as e:
+            logger.error(f"Failed to get recent forecast records: {e}")
+            return []
     
     def check_health(self) -> bool:
         """Check if database is healthy and accessible"""

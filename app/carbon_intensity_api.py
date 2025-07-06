@@ -51,26 +51,23 @@ class CarbonIntensityAPI:
             
             data = response.json()
             
-            # Debug: Print raw response structure
-            # print(f"DEBUG: API Response keys: {list(data.keys())}")
-            # print(f"DEBUG: Number of data entries: {len(data.get('data', []))}")
-            
             # Extract and format data points
             data_points = []
-            for i, entry in enumerate(data.get('data', [])):
-                # print(f"DEBUG: Entry {i}: {entry}")
+            for entry in data.get('data', []):
                 timestamp = entry.get('to')  # Use 'to' timestamp as the main identifier
                 intensity = entry.get('intensity', {})
-                emissions = intensity.get('actual', intensity.get('forecast'))
+                # Use actual if available, otherwise fall back to forecast
+                emissions = intensity.get('actual') if intensity.get('actual') is not None else intensity.get('forecast')
                 
                 if timestamp and emissions is not None:
+                    # Determine if this is a forecast or actual
+                    is_forecast = intensity.get('actual') is None
+                    
                     data_points.append({
                         'timestamp': timestamp,
-                        'emissions': emissions
+                        'emissions': emissions,
+                        'is_forecast': is_forecast
                     })
-                    # print(f"DEBUG: Added data point: {timestamp} = {emissions}")
-                # else:
-                #     print(f"DEBUG: Skipped entry {i} - timestamp: {timestamp}, emissions: {emissions}")
             
             logger.info(f"Retrieved {len(data_points)} carbon intensity data points from API")
             print(f"Retrieved {len(data_points)} carbon intensity data points from API")

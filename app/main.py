@@ -45,6 +45,7 @@ class GridTracker:
         self.last_neso_data_portal_collection = None
         self.last_health_check = None
         self.last_backfill = None
+        self.last_forecast_update = None
         
         # Control flag for graceful shutdown
         self.running = True
@@ -81,6 +82,14 @@ class GridTracker:
         
         time_since_last = time.time() - self.last_backfill
         return time_since_last >= self.config.BACKFILL_INTERVAL
+    
+    def should_run_forecast_update(self) -> bool:
+        """Check if it's time to run forecast update"""
+        if not self.last_forecast_update:
+            return True
+        
+        time_since_last = time.time() - self.last_forecast_update
+        return time_since_last >= self.config.FORECAST_UPDATE_INTERVAL
     
     def collect_carbon_intensity_data(self) -> bool:
         """Collect carbon intensity data with smart gap detection"""
@@ -146,7 +155,8 @@ class GridTracker:
             for point in data_points:
                 success = self.db.insert_carbon_intensity_data(
                     timestamp=point['timestamp'],
-                    emissions=point['emissions']
+                    emissions=point['emissions'],
+                    is_forecast=point.get('is_forecast', False)
                 )
                 if success:
                     inserted_count += 1
@@ -267,7 +277,8 @@ class GridTracker:
                         for point in data_points:
                             success = self.db.insert_carbon_intensity_data(
                                 timestamp=point['timestamp'],
-                                emissions=point['emissions']
+                                emissions=point['emissions'],
+                                is_forecast=point.get('is_forecast', False)
                             )
                             if success:
                                 inserted_count += 1
@@ -320,6 +331,72 @@ class GridTracker:
         gap_ranges.append((current_start, current_end))
         
         return gap_ranges
+    
+    def run_forecast_update(self) -> bool:
+        """Check and update recent forecast records with actuals"""
+        try:
+            logger.info("Starting forecast update cycle...")
+            print("Starting forecast update cycle...")
+            
+            # Get recent forecast records (last 24 hours)
+            forecast_records = self.db.get_recent_forecast_records(hours=24)
+            
+            if not forecast_records:
+                logger.info("No recent forecast records to update")
+                print("No recent forecast records to update")
+                return True
+            
+            logger.info(f"Found {len(forecast_records)} recent forecast records to check")
+            print(f"Found {len(forecast_records)} recent forecast records to check")
+            
+            updated_count = 0
+            for record in forecast_records:
+                try:
+                    # Parse timestamp
+                    timestamp_str = record['timestamp']
+                    if timestamp_str.endswith('Z'):
+                        record_time = datetime.fromisoformat(timestamp_str.replace('Z', '+00:00'))
+                    else:
+                        record_time = datetime.fromisoformat(timestamp_str)
+                    
+                    # Check if this record is more than a year old
+                    current_time = datetime.now(timezone.utc)
+                    if (current_time - record_time).days > 365:
+                        continue  # Skip old records
+                    
+                    # Fetch data for this specific timestamp
+                    start_time = record_time
+                    end_time = record_time + timedelta(minutes=30)  # 30-minute window
+                    
+                    data_points = self.carbon_intensity_api.get_intensity_data(start_time, end_time)
+                    
+                    if data_points:
+                        # Check if we got an actual value
+                        for point in data_points:
+                            if point['timestamp'] == timestamp_str and not point.get('is_forecast', True):
+                                # We got an actual value, update the record
+                                success = self.db.insert_carbon_intensity_data(
+                                    timestamp=point['timestamp'],
+                                    emissions=point['emissions'],
+                                    is_forecast=False
+                                )
+                                if success:
+                                    updated_count += 1
+                                    logger.info(f"Updated forecast to actual: {timestamp_str} = {point['emissions']}")
+                                    print(f"Updated forecast to actual: {timestamp_str} = {point['emissions']}")
+                                break
+                
+                except Exception as e:
+                    logger.error(f"Error updating forecast record {record['timestamp']}: {e}")
+                    continue
+            
+            logger.info(f"Forecast update complete: {updated_count} records updated")
+            print(f"Forecast update complete: {updated_count} records updated")
+            return True
+            
+        except Exception as e:
+            logger.error(f"Forecast update failed: {e}")
+            return False
     
     def run_backfill(self) -> bool:
         """Run backfill for all configured data sources"""
@@ -388,6 +465,14 @@ class GridTracker:
                         print(f"Backfill completed at {datetime.now()}")
                     else:
                         print(f"Backfill failed at {datetime.now()}")
+                
+                if self.should_run_forecast_update():
+                    success = self.run_forecast_update()
+                    self.last_forecast_update = time.time()
+                    if success:
+                        print(f"Forecast update completed at {datetime.now()}")
+                    else:
+                        print(f"Forecast update failed at {datetime.now()}")
                 
                 # Sleep for a short interval
                 time.sleep(self.config.MAIN_LOOP_INTERVAL)
