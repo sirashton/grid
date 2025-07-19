@@ -39,8 +39,12 @@ class Config:
             'target_oldest_days': 365*7,  # Target X days of historical data
             'hours_per_call': 7 * 24,  # 7 days worth of data per API call
             'max_calls_per_cycle': 10,  # Maximum API calls per backfill cycle
+        },
+        'generation_30min_data': {
+            'target_oldest_days': 365*2,  # Target 2 years of historical data
+            'hours_per_call': 7 * 24,  # 7 days worth of data per API call
+            'max_calls_per_cycle': 5,  # Maximum API calls per backfill cycle
         }
         # Future data sources can be added here:
-        # 'elexon_bm_reports': { ... },
         # 'neso_data_portal': { ... },
     } 

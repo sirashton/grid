@@ -98,10 +98,33 @@ def backfill_table_data(
                 # Insert data into database
                 inserted_count = 0
                 for point in data_points:
-                    success = db_insert_function(
-                        timestamp=point['timestamp'],
-                        emissions=point['emissions']
-                    )
+                    # Use table name to determine insertion method
+                    if table_name == 'carbon_intensity_30min_data':
+                        success = db_insert_function(
+                            timestamp=point['timestamp'],
+                            emissions=point['emissions'],
+                            is_forecast=point.get('is_forecast', False)
+                        )
+                    elif table_name == 'generation_30min_data':
+                        success = db_insert_function(
+                            timestamp=point['timestamp'],
+                            settlement_period=point['settlement_period'],
+                            biomass=point['biomass'],
+                            fossil_gas=point['fossil_gas'],
+                            fossil_hard_coal=point['fossil_hard_coal'],
+                            fossil_oil=point['fossil_oil'],
+                            hydro_pumped_storage=point['hydro_pumped_storage'],
+                            hydro_run_of_river=point['hydro_run_of_river'],
+                            nuclear=point['nuclear'],
+                            other=point['other'],
+                            solar=point['solar'],
+                            wind_offshore=point['wind_offshore'],
+                            wind_onshore=point['wind_onshore']
+                        )
+                    else:
+                        # Generic approach for unknown tables
+                        success = db_insert_function(**point)
+                    
                     if success:
                         inserted_count += 1
                 

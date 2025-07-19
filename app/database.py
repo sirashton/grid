@@ -52,6 +52,33 @@ class Database:
                 ON carbon_intensity_30min_data(timestamp)
             """)
             
+            # Create generation_30min_data table
+            cursor.execute("""
+                CREATE TABLE IF NOT EXISTS generation_30min_data (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    timestamp DATETIME NOT NULL UNIQUE,
+                    settlement_period INTEGER,
+                    biomass REAL,
+                    fossil_gas REAL,
+                    fossil_hard_coal REAL,
+                    fossil_oil REAL,
+                    hydro_pumped_storage REAL,
+                    hydro_run_of_river REAL,
+                    nuclear REAL,
+                    other REAL,
+                    solar REAL,
+                    wind_offshore REAL,
+                    wind_onshore REAL,
+                    created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+                )
+            """)
+            
+            # Create index for efficient queries
+            cursor.execute("""
+                CREATE INDEX IF NOT EXISTS idx_generation_30min_timestamp 
+                ON generation_30min_data(timestamp)
+            """)
+            
             conn.commit()
             logger.info(f"Database initialized: {self.db_path}")
     
@@ -233,6 +260,130 @@ class Database:
         except Exception as e:
             logger.error(f"Database health check failed: {e}")
             return False
+    
+    def insert_generation_data(self, timestamp: str, settlement_period: int, **fuel_data) -> bool:
+        """
+        Insert generation data by fuel type
+        
+        Args:
+            timestamp: ISO format timestamp string
+            settlement_period: Settlement period number
+            **fuel_data: Keyword arguments for fuel types (biomass, fossil_gas, etc.)
+            
+        Returns:
+            True if successful, False otherwise
+        """
+        try:
+            with sqlite3.connect(self.db_path) as conn:
+                cursor = conn.cursor()
+                
+                # Check if record exists
+                cursor.execute("""
+                    SELECT id FROM generation_30min_data 
+                    WHERE timestamp = ?
+                """, (timestamp,))
+                existing_record = cursor.fetchone()
+                
+                if existing_record:
+                    logger.debug(f"Generation data already exists for {timestamp}")
+                    return True  # Not an error, just no change
+                
+                # Insert the record
+                cursor.execute("""
+                    INSERT INTO generation_30min_data (
+                        timestamp, settlement_period, biomass, fossil_gas, fossil_hard_coal,
+                        fossil_oil, hydro_pumped_storage, hydro_run_of_river, nuclear,
+                        other, solar, wind_offshore, wind_onshore
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """, (
+                    timestamp, settlement_period,
+                    fuel_data.get('biomass'),
+                    fuel_data.get('fossil_gas'),
+                    fuel_data.get('fossil_hard_coal'),
+                    fuel_data.get('fossil_oil'),
+                    fuel_data.get('hydro_pumped_storage'),
+                    fuel_data.get('hydro_run_of_river'),
+                    fuel_data.get('nuclear'),
+                    fuel_data.get('other'),
+                    fuel_data.get('solar'),
+                    fuel_data.get('wind_offshore'),
+                    fuel_data.get('wind_onshore')
+                ))
+                conn.commit()
+                
+                if cursor.rowcount > 0:
+                    logger.debug(f"Inserted generation data: {timestamp}")
+                    return True
+                else:
+                    logger.debug(f"Generation data unchanged: {timestamp}")
+                    return True  # Not an error, just no change
+                    
+        except Exception as e:
+            logger.error(f"Failed to insert generation data: {e}")
+            return False
+    
+    def get_latest_generation_data(self, limit: int = 1) -> List[Dict]:
+        """
+        Get the latest generation data points
+        
+        Args:
+            limit: Number of records to return
+            
+        Returns:
+            List of dictionaries with timestamp and generation data
+        """
+        try:
+            with sqlite3.connect(self.db_path) as conn:
+                conn.row_factory = sqlite3.Row
+                cursor = conn.cursor()
+                
+                cursor.execute("""
+                    SELECT timestamp, settlement_period, biomass, fossil_gas, fossil_hard_coal,
+                           fossil_oil, hydro_pumped_storage, hydro_run_of_river, nuclear,
+                           other, solar, wind_offshore, wind_onshore
+                    FROM generation_30min_data
+                    ORDER BY timestamp DESC
+                    LIMIT ?
+                """, (limit,))
+                
+                return [dict(row) for row in cursor.fetchall()]
+                
+        except Exception as e:
+            logger.error(f"Failed to get latest generation data: {e}")
+            return []
+    
+    def get_generation_stats(self) -> Dict:
+        """Get generation database statistics"""
+        try:
+            with sqlite3.connect(self.db_path) as conn:
+                cursor = conn.cursor()
+                
+                # Total records
+                cursor.execute("SELECT COUNT(*) FROM generation_30min_data")
+                total_records = cursor.fetchone()[0]
+                
+                # Date range
+                cursor.execute("""
+                    SELECT MIN(timestamp), MAX(timestamp) 
+                    FROM generation_30min_data
+                """)
+                min_time, max_time = cursor.fetchone()
+                
+                return {
+                    'total_records': total_records,
+                    'earliest_data': min_time,
+                    'latest_data': max_time,
+                    'healthy': True
+                }
+                
+        except Exception as e:
+            logger.error(f"Failed to get generation stats: {e}")
+            return {
+                'total_records': 0,
+                'earliest_data': None,
+                'latest_data': None,
+                'healthy': False
+            }
     
     def get_carbon_intensity_stats(self) -> Dict:
         """Get carbon intensity database statistics"""

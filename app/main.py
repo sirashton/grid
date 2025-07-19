@@ -14,6 +14,7 @@ from typing import List, Tuple
 from config import Config
 from database import Database
 from carbon_intensity_api import CarbonIntensityAPI
+from elexon_bm_api import ElexonBMAPI
 from data_gap_detector import DataGapDetector
 from utils.backfill_utils import run_backfill_cycle
 
@@ -37,6 +38,7 @@ class GridTracker:
         self.config = Config()
         self.db = Database()
         self.carbon_intensity_api = CarbonIntensityAPI()
+        self.elexon_bm_api = ElexonBMAPI()
         self.gap_detector = DataGapDetector()
         
         # Track last collection times for each data source
@@ -66,6 +68,14 @@ class GridTracker:
         
         time_since_last = time.time() - self.last_carbon_intensity_collection
         return time_since_last >= self.config.CARBON_INTENSITY_COLLECTION_INTERVAL
+    
+    def should_run_elexon_bm_collection(self) -> bool:
+        """Check if it's time to collect Elexon BM generation data"""
+        if not self.last_elexon_bm_reports_collection:
+            return True
+        
+        time_since_last = time.time() - self.last_elexon_bm_reports_collection
+        return time_since_last >= self.config.ELEXON_BM_REPORTS_COLLECTION_INTERVAL
     
     def should_run_health_check(self) -> bool:
         """Check if it's time to run health check"""
@@ -168,6 +178,93 @@ class GridTracker:
             logger.error(f"Carbon intensity data collection failed: {e}")
             return False
     
+    def collect_elexon_bm_data(self) -> bool:
+        """Collect Elexon BM generation data with smart gap detection"""
+        try:
+            logger.info("Starting Elexon BM generation data collection...")
+            print("--------------------------------")
+            print("Elexon BM generation data collection started")
+            print("--------------------------------\n")
+
+            # Get latest data from database
+            latest_data = self.db.get_latest_generation_data(limit=1)
+            current_time = datetime.now(timezone.utc)
+            
+            if latest_data:
+                # Parse the latest timestamp
+                latest_timestamp_str = latest_data[0]['timestamp']
+                
+                try:
+                    if latest_timestamp_str.endswith('Z'):
+                        latest_timestamp = datetime.fromisoformat(latest_timestamp_str.replace('Z', '+00:00'))
+                    else:
+                        latest_timestamp = datetime.fromisoformat(latest_timestamp_str)
+                    
+                    # Check if data is fresh enough (< 2 hours old)
+                    time_since_latest = current_time - latest_timestamp
+                    
+                    if time_since_latest.total_seconds() < 7200:  # 2 hours
+                        print(f"Generation data is fresh ({time_since_latest.total_seconds()/3600:.1f} hours old), skipping collection")
+                        logger.info(f"Generation data is fresh ({time_since_latest.total_seconds()/3600:.1f} hours old), skipping collection")
+                        return True
+                    
+                    # Data is stale, fetch from latest timestamp to current time
+                    start_time = latest_timestamp
+                    end_time = current_time
+                    gap_hours = time_since_latest.total_seconds() / 3600
+                    
+                    print(f"Generation data is {gap_hours:.1f} hours old, fetching missing data")
+                    logger.info(f"Generation data is {gap_hours:.1f} hours old, fetching missing data")
+                    
+                except ValueError as e:
+                    logger.warning(f"Could not parse latest timestamp {latest_timestamp_str}: {e}")
+                    # If we can't parse the timestamp, fetch last 24 hours
+                    start_time = current_time - timedelta(hours=24)
+                    end_time = current_time
+                    gap_hours = 24
+                    logger.info("Could not parse latest timestamp, fetching last 24 hours of data")
+            else:
+                # Database is empty, fetch last 24 hours
+                start_time = current_time - timedelta(hours=24)
+                end_time = current_time
+                gap_hours = 24
+                logger.info("Database empty, fetching last 24 hours of generation data")
+            
+            # Fetch data from API
+            data_points = self.elexon_bm_api.get_generation_data(start_time, end_time)
+            
+            if not data_points:
+                logger.warning("No generation data points received from API")
+                return False
+            
+            # Store data in database
+            inserted_count = 0
+            for point in data_points:
+                success = self.db.insert_generation_data(
+                    timestamp=point['timestamp'],
+                    settlement_period=point['settlement_period'],
+                    biomass=point['biomass'],
+                    fossil_gas=point['fossil_gas'],
+                    fossil_hard_coal=point['fossil_hard_coal'],
+                    fossil_oil=point['fossil_oil'],
+                    hydro_pumped_storage=point['hydro_pumped_storage'],
+                    hydro_run_of_river=point['hydro_run_of_river'],
+                    nuclear=point['nuclear'],
+                    other=point['other'],
+                    solar=point['solar'],
+                    wind_offshore=point['wind_offshore'],
+                    wind_onshore=point['wind_onshore']
+                )
+                if success:
+                    inserted_count += 1
+            
+            logger.info(f"Elexon BM collection complete: {inserted_count} points collected to fill {gap_hours:.1f} hour gap")
+            return True
+            
+        except Exception as e:
+            logger.error(f"Elexon BM data collection failed: {e}")
+            return False
+    
     def run_health_check(self) -> bool:
         """Run system health check"""
         try:
@@ -176,44 +273,78 @@ class GridTracker:
             # Check database health
             db_healthy = self.db.check_health()
             if db_healthy:
-                stats = self.db.get_carbon_intensity_stats()
-                print(f"Database healthy: {stats['total_records']} carbon intensity records")
+                # Carbon intensity stats
+                carbon_stats = self.db.get_carbon_intensity_stats()
+                print(f"Database healthy: {carbon_stats['total_records']} carbon intensity records")
                 
-                # Check for data gaps
-                gaps = self.gap_detector.detect_data_gaps(
+                # Generation stats
+                generation_stats = self.db.get_generation_stats()
+                print(f"Database healthy: {generation_stats['total_records']} generation records")
+                
+                # Check for data gaps in carbon intensity
+                carbon_gaps = self.gap_detector.detect_data_gaps(
                     table_name='carbon_intensity_30min_data',
                     granularity_minutes=30
                 )
                 
-                if gaps:
-                    print(f"Found {len(gaps)} data gaps in carbon intensity data:")
-                    for gap_start, gap_end in gaps[:5]:  # Show first 5 gaps
+                if carbon_gaps:
+                    print(f"Found {len(carbon_gaps)} data gaps in carbon intensity data:")
+                    for gap_start, gap_end in carbon_gaps[:5]:  # Show first 5 gaps
                         print(f"  Missing: {gap_start.isoformat()}")
-                    if len(gaps) > 5:
-                        print(f"  ... and {len(gaps) - 5} more gaps")
+                    if len(carbon_gaps) > 5:
+                        print(f"  ... and {len(carbon_gaps) - 5} more gaps")
                     
                     # Attempt to fill the gaps
-                    print("Attempting to fill gaps...")
+                    print("Attempting to fill carbon intensity gaps...")
                     gap_fill_success = self.fill_data_gaps('carbon_intensity_30min_data', 30)
                     if gap_fill_success:
-                        print("Gap filling completed")
+                        print("Carbon intensity gap filling completed")
                     else:
-                        print("Gap filling failed")
+                        print("Carbon intensity gap filling failed")
                 else:
                     print("No data gaps detected in carbon intensity data")
+                
+                # Check for data gaps in generation
+                generation_gaps = self.gap_detector.detect_data_gaps(
+                    table_name='generation_30min_data',
+                    granularity_minutes=30
+                )
+                
+                if generation_gaps:
+                    print(f"Found {len(generation_gaps)} data gaps in generation data:")
+                    for gap_start, gap_end in generation_gaps[:5]:  # Show first 5 gaps
+                        print(f"  Missing: {gap_start.isoformat()}")
+                    if len(generation_gaps) > 5:
+                        print(f"  ... and {len(generation_gaps) - 5} more gaps")
+                    
+                    # Attempt to fill the gaps
+                    print("Attempting to fill generation gaps...")
+                    gap_fill_success = self.fill_generation_gaps('generation_30min_data', 30)
+                    if gap_fill_success:
+                        print("Generation gap filling completed")
+                    else:
+                        print("Generation gap filling failed")
+                else:
+                    print("No data gaps detected in generation data")
                 
             else:
                 print("Database health check failed")
             
             # Check API health
-            api_healthy = self.carbon_intensity_api.check_health()
-            if api_healthy:
+            carbon_api_healthy = self.carbon_intensity_api.check_health()
+            if carbon_api_healthy:
                 print("Carbon Intensity API healthy")
             else:
                 print("Carbon Intensity API health check failed")
             
+            elexon_api_healthy = self.elexon_bm_api.check_health()
+            if elexon_api_healthy:
+                print("Elexon BM API healthy")
+            else:
+                print("Elexon BM API health check failed")
+            
             logger.info("Health check complete")
-            return db_healthy and api_healthy
+            return db_healthy and carbon_api_healthy and elexon_api_healthy
             
         except Exception as e:
             logger.error(f"Health check failed: {e}")
@@ -300,6 +431,74 @@ class GridTracker:
             
         except Exception as e:
             logger.error(f"Error in gap filling: {e}")
+            return False
+    
+    def fill_generation_gaps(self, table_name: str, granularity_minutes: int) -> bool:
+        """Detect and fill gaps in generation data"""
+        try:
+            logger.info(f"Checking for gaps in {table_name}...")
+            
+            # Detect gaps
+            gaps = self.gap_detector.detect_data_gaps(
+                table_name=table_name,
+                granularity_minutes=granularity_minutes
+            )
+            
+            if not gaps:
+                logger.info(f"No gaps found in {table_name}")
+                return True
+            
+            logger.info(f"Found {len(gaps)} gaps in {table_name}")
+            print(f"Found {len(gaps)} gaps in {table_name}")
+            
+            # Group consecutive gaps for efficient filling
+            gap_ranges = self._group_consecutive_gaps(gaps, granularity_minutes)
+            
+            total_filled = 0
+            for gap_start, gap_end in gap_ranges:
+                try:
+                    # Fetch data for this gap range
+                    data_points = self.elexon_bm_api.get_generation_data(gap_start, gap_end)
+                    
+                    if data_points:
+                        # Store the data
+                        inserted_count = 0
+                        for point in data_points:
+                            success = self.db.insert_generation_data(
+                                timestamp=point['timestamp'],
+                                settlement_period=point['settlement_period'],
+                                biomass=point['biomass'],
+                                fossil_gas=point['fossil_gas'],
+                                fossil_hard_coal=point['fossil_hard_coal'],
+                                fossil_oil=point['fossil_oil'],
+                                hydro_pumped_storage=point['hydro_pumped_storage'],
+                                hydro_run_of_river=point['hydro_run_of_river'],
+                                nuclear=point['nuclear'],
+                                other=point['other'],
+                                solar=point['solar'],
+                                wind_offshore=point['wind_offshore'],
+                                wind_onshore=point['wind_onshore']
+                            )
+                            if success:
+                                inserted_count += 1
+                        
+                        total_filled += inserted_count
+                        logger.info(f"Filled generation gap {gap_start} to {gap_end}: {inserted_count} points")
+                        print(f"  Filled generation gap {gap_start.strftime('%Y-%m-%d %H:%M')} to {gap_end.strftime('%Y-%m-%d %H:%M')}: {inserted_count} points")
+                    else:
+                        logger.warning(f"No generation data received for gap {gap_start} to {gap_end}")
+                        print(f"  No generation data received for gap {gap_start.strftime('%Y-%m-%d %H:%M')} to {gap_end.strftime('%Y-%m-%d %H:%M')}")
+                        
+                except Exception as e:
+                    logger.error(f"Error filling generation gap {gap_start} to {gap_end}: {e}")
+                    print(f"  Error filling generation gap {gap_start.strftime('%Y-%m-%d %H:%M')} to {gap_end.strftime('%Y-%m-%d %H:%M')}: {e}")
+            
+            logger.info(f"Generation gap filling complete: {total_filled} points filled")
+            print(f"Generation gap filling complete: {total_filled} points filled")
+            return True
+            
+        except Exception as e:
+            logger.error(f"Error in generation gap filling: {e}")
             return False
     
     def _group_consecutive_gaps(self, gaps: List[Tuple[datetime, datetime]], granularity_minutes: int) -> List[Tuple[datetime, datetime]]:
@@ -406,12 +605,14 @@ class GridTracker:
             
             # Set up API functions mapping
             api_functions = {
-                'carbon_intensity_30min_data': self.carbon_intensity_api.get_intensity_data
+                'carbon_intensity_30min_data': self.carbon_intensity_api.get_intensity_data,
+                'generation_30min_data': self.elexon_bm_api.get_generation_data
             }
             
             # Set up database insert functions mapping
             db_insert_functions = {
-                'carbon_intensity_30min_data': self.db.insert_carbon_intensity_data
+                'carbon_intensity_30min_data': self.db.insert_carbon_intensity_data,
+                'generation_30min_data': self.db.insert_generation_data
             }
             
             # Run backfill cycle
@@ -449,6 +650,14 @@ class GridTracker:
                         print(f"Carbon intensity collection completed at {datetime.now()}")
                     else:
                         print(f"Carbon intensity collection failed at {datetime.now()}")
+                
+                if self.should_run_elexon_bm_collection():
+                    success = self.collect_elexon_bm_data()
+                    if success:
+                        self.last_elexon_bm_reports_collection = time.time()
+                        print(f"Elexon BM collection completed at {datetime.now()}")
+                    else:
+                        print(f"Elexon BM collection failed at {datetime.now()}")
                 
                 if self.should_run_health_check():
                     success = self.run_health_check()
