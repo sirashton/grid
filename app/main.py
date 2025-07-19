@@ -396,6 +396,13 @@ class GridTracker:
             # Group consecutive gaps to minimize API calls
             gap_ranges = self._group_consecutive_gaps(gaps, granularity_minutes)
             
+            # Limit to most recent 5 chunks to avoid too many API calls
+            MAX_GAP_CHUNKS = 5
+            if len(gap_ranges) > MAX_GAP_CHUNKS:
+                logger.info(f"Limiting gap filling to most recent {MAX_GAP_CHUNKS} chunks (out of {len(gap_ranges)} total)")
+                print(f"Limiting gap filling to most recent {MAX_GAP_CHUNKS} chunks (out of {len(gap_ranges)} total)")
+                gap_ranges = gap_ranges[-MAX_GAP_CHUNKS:]
+            
             total_filled = 0
             for gap_start, gap_end in gap_ranges:
                 try:
@@ -454,6 +461,13 @@ class GridTracker:
             # Group consecutive gaps for efficient filling
             gap_ranges = self._group_consecutive_gaps(gaps, granularity_minutes)
             
+            # Limit to most recent 5 chunks to avoid too many API calls
+            MAX_GAP_CHUNKS = 5
+            if len(gap_ranges) > MAX_GAP_CHUNKS:
+                logger.info(f"Limiting gap filling to most recent {MAX_GAP_CHUNKS} chunks (out of {len(gap_ranges)} total)")
+                print(f"Limiting gap filling to most recent {MAX_GAP_CHUNKS} chunks (out of {len(gap_ranges)} total)")
+                gap_ranges = gap_ranges[-MAX_GAP_CHUNKS:]
+            
             total_filled = 0
             for gap_start, gap_end in gap_ranges:
                 try:
@@ -502,7 +516,7 @@ class GridTracker:
             return False
     
     def _group_consecutive_gaps(self, gaps: List[Tuple[datetime, datetime]], granularity_minutes: int) -> List[Tuple[datetime, datetime]]:
-        """Group consecutive gaps into ranges to minimize API calls"""
+        """Group consecutive gaps into ranges to minimize API calls, with 5-day limit"""
         if not gaps:
             return []
         
@@ -517,11 +531,15 @@ class GridTracker:
             # Check if this gap is consecutive with the current range
             expected_next = current_end + timedelta(minutes=granularity_minutes)
             
-            if gap_start == expected_next:
-                # Consecutive gap, extend the range
+            # Check if adding this gap would exceed 5 days
+            range_duration = gap_end - current_start
+            max_duration = timedelta(days=5)
+            
+            if gap_start == expected_next and range_duration <= max_duration:
+                # Consecutive gap within 5-day limit, extend the range
                 current_end = gap_end
             else:
-                # Non-consecutive gap, save current range and start new one
+                # Non-consecutive gap or would exceed 5 days, save current range and start new one
                 gap_ranges.append((current_start, current_end))
                 current_start = gap_start
                 current_end = gap_end
