@@ -152,10 +152,20 @@ class DataGapDetector:
     ) -> List[Tuple[datetime, datetime]]:
         """Find gaps between expected and actual timestamps"""
         gaps = []
-        actual_set = set(actual_timestamps)
+        
+        # Normalize actual timestamps to remove seconds for comparison
+        # This handles both formats: "2023-07-14T00:00Z" and "2023-07-14T00:00:00Z"
+        normalized_actual_set = set()
+        for actual_ts in actual_timestamps:
+            # Remove seconds if present (e.g., "2023-07-14T00:00:00Z" -> "2023-07-14T00:00Z")
+            if len(actual_ts) > 17:  # Has seconds
+                normalized_ts = actual_ts[:16] + "Z"  # Remove seconds and colon, keep Z
+            else:
+                normalized_ts = actual_ts
+            normalized_actual_set.add(normalized_ts)
         
         for expected_ts in expected_timestamps:
-            if expected_ts not in actual_set:
+            if expected_ts not in normalized_actual_set:
                 # Parse the missing timestamp for return format
                 missing_time = self._parse_timestamp(expected_ts)
                 # Gap start and end are the same for a single missing point

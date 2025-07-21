@@ -77,6 +77,8 @@ class CarbonIntensityAPI:
                 print(f"Min timestamp: {min(data_points, key=lambda x: x['timestamp'])}")
             else:
                 print("No data points received from API")
+                # Print the full URL for debugging when we get 0 data points
+                print(f"DEBUG: Full API URL to check in browser: {url}")
             return data_points
             
         except requests.exceptions.RequestException as e:

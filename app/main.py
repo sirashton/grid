@@ -396,8 +396,8 @@ class GridTracker:
             # Group consecutive gaps to minimize API calls
             gap_ranges = self._group_consecutive_gaps(gaps, granularity_minutes)
             
-            # Limit to most recent 5 chunks to avoid too many API calls
-            MAX_GAP_CHUNKS = 5
+            # Limit to most recent 100 chunks to avoid too many API calls
+            MAX_GAP_CHUNKS = 100
             if len(gap_ranges) > MAX_GAP_CHUNKS:
                 logger.info(f"Limiting gap filling to most recent {MAX_GAP_CHUNKS} chunks (out of {len(gap_ranges)} total)")
                 print(f"Limiting gap filling to most recent {MAX_GAP_CHUNKS} chunks (out of {len(gap_ranges)} total)")
@@ -461,8 +461,8 @@ class GridTracker:
             # Group consecutive gaps for efficient filling
             gap_ranges = self._group_consecutive_gaps(gaps, granularity_minutes)
             
-            # Limit to most recent 5 chunks to avoid too many API calls
-            MAX_GAP_CHUNKS = 5
+            # Limit to most recent 100 chunks to avoid too many API calls
+            MAX_GAP_CHUNKS = 100
             if len(gap_ranges) > MAX_GAP_CHUNKS:
                 logger.info(f"Limiting gap filling to most recent {MAX_GAP_CHUNKS} chunks (out of {len(gap_ranges)} total)")
                 print(f"Limiting gap filling to most recent {MAX_GAP_CHUNKS} chunks (out of {len(gap_ranges)} total)")

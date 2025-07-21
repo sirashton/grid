@@ -7,6 +7,7 @@ import requests
 import logging
 from datetime import datetime, timezone, timedelta
 from typing import List, Dict, Optional
+from urllib.parse import urlencode
 
 logger = logging.getLogger(__name__)
 
@@ -40,6 +41,10 @@ class ElexonBMAPI:
             current_end = min(current_start + timedelta(days=max_days), end_time)
             chunks.append((current_start, current_end))
             current_start = current_end
+        
+        # Handle the case where start_time equals end_time (single timestamp)
+        if start_time == end_time:
+            chunks.append((start_time, end_time))
             
         return chunks
     
@@ -55,15 +60,17 @@ class ElexonBMAPI:
             List of data points with timestamp and generation by fuel type
         """
         try:
+            print(f"Starting API call for range: {start_time} to {end_time}")
             # Split large date ranges into 5-day chunks
             date_chunks = self._limit_date_range(start_time, end_time, max_days=5)
+            print(f"Split into {len(date_chunks)} chunks")
             
             all_data_points = []
             
             for chunk_start, chunk_end in date_chunks:
-                # Format dates for API (YYYY-MM-DD format)
-                start_date = chunk_start.strftime('%Y-%m-%d')
-                end_date = chunk_end.strftime('%Y-%m-%d')
+                # Format dates for API (YYYY-MM-DDTHH:MM:SSZ format)
+                start_date = chunk_start.strftime('%Y-%m-%dT%H:%M:%SZ')
+                end_date = chunk_end.strftime('%Y-%m-%dT%H:%M:%SZ')
                 
                 # Make API request
                 url = f"{self.base_url}/generation/actual/per-type"
@@ -75,18 +82,25 @@ class ElexonBMAPI:
                 
                 logger.debug(f"Fetching generation data from: {url} with params {params}")
                 print(f"Fetching generation data from: {url}")
+                print(f"Params: {params}")
                 
                 response = self.session.get(url, params=params, timeout=30)
+                print(f"Response status: {response.status_code}")
                 response.raise_for_status()
                 
                 data = response.json()
+                print(f"Raw API response: {data}")
                 
                 # Extract and format data points
                 data_points = []
+                print(f"Processing {len(data.get('data', []))} entries from API response")
+                
                 for entry in data.get('data', []):
                     timestamp = entry.get('startTime')
                     settlement_period = entry.get('settlementPeriod')
                     generation_data = entry.get('data', [])
+                    
+                    print(f"Processing entry: timestamp={timestamp}, settlement_period={settlement_period}, generation_data_count={len(generation_data)}")
                     
                     if timestamp and generation_data:
                         # Create a data point with all fuel types
@@ -148,6 +162,19 @@ class ElexonBMAPI:
                 print(f"Min timestamp: {min(all_data_points, key=lambda x: x['timestamp'])['timestamp']}")
             else:
                 print("No data points received from API")
+                # Print the full URL for debugging when we get 0 data points
+                if date_chunks:
+                    chunk_start, chunk_end = date_chunks[0]  # Use first chunk for URL
+                    start_date = chunk_start.strftime('%Y-%m-%dT%H:%M:%SZ')
+                    end_date = chunk_end.strftime('%Y-%m-%dT%H:%M:%SZ')
+                    # Properly encode the URL parameters
+                    params = {
+                        'from': start_date,
+                        'to': end_date,
+                        'format': 'json'
+                    }
+                    full_url = f"{self.base_url}/generation/actual/per-type?{urlencode(params)}"
+                    print(f"DEBUG: Full API URL to check in browser: {full_url}")
                 
             return all_data_points
             
