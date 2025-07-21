@@ -8,6 +8,7 @@ import logging
 from datetime import datetime, timezone, timedelta
 from typing import List, Tuple, Optional, Dict
 from pathlib import Path
+from utils.timestamp_utils import normalize_timestamp, parse_timestamp, format_timestamp
 
 logger = logging.getLogger(__name__)
 
@@ -108,14 +109,7 @@ class DataGapDetector:
     
     def _parse_timestamp(self, timestamp_str: str) -> datetime:
         """Parse timestamp string to datetime object"""
-        try:
-            if timestamp_str.endswith('Z'):
-                return datetime.fromisoformat(timestamp_str.replace('Z', '+00:00'))
-            else:
-                return datetime.fromisoformat(timestamp_str)
-        except ValueError as e:
-            logger.error(f"Could not parse timestamp '{timestamp_str}': {e}")
-            raise
+        return parse_timestamp(timestamp_str)
     
     def _find_duplicate_timestamps(self, timestamps: List[str]) -> List[str]:
         """Find duplicate timestamps in the list"""
@@ -140,7 +134,7 @@ class DataGapDetector:
         
         while current <= end_time:
             # Format without seconds to match database format exactly
-            expected.append(current.strftime('%Y-%m-%dT%H:%MZ'))
+            expected.append(format_timestamp(current))
             current += timedelta(minutes=granularity_minutes)
         
         return expected
@@ -150,26 +144,70 @@ class DataGapDetector:
         expected_timestamps: List[str], 
         actual_timestamps: List[str]
     ) -> List[Tuple[datetime, datetime]]:
-        """Find gaps between expected and actual timestamps"""
+        """Find gaps between expected and actual timestamps, consolidating consecutive gaps"""
         gaps = []
         
         # Normalize actual timestamps to remove seconds for comparison
         # This handles both formats: "2023-07-14T00:00Z" and "2023-07-14T00:00:00Z"
         normalized_actual_set = set()
         for actual_ts in actual_timestamps:
-            # Remove seconds if present (e.g., "2023-07-14T00:00:00Z" -> "2023-07-14T00:00Z")
-            if len(actual_ts) > 17:  # Has seconds
-                normalized_ts = actual_ts[:16] + "Z"  # Remove seconds and colon, keep Z
-            else:
-                normalized_ts = actual_ts
+            normalized_ts = normalize_timestamp(actual_ts)
             normalized_actual_set.add(normalized_ts)
         
+        # Find all missing timestamps
+        missing_timestamps = []
         for expected_ts in expected_timestamps:
-            if expected_ts not in normalized_actual_set:
-                # Parse the missing timestamp for return format
-                missing_time = self._parse_timestamp(expected_ts)
-                # Gap start and end are the same for a single missing point
-                gaps.append((missing_time, missing_time))
+            normalized_expected = normalize_timestamp(expected_ts)
+            if normalized_expected not in normalized_actual_set:
+                missing_timestamps.append(self._parse_timestamp(expected_ts))
+        
+        logger.info(f"Found {len(missing_timestamps)} missing timestamps")
+        for ts in missing_timestamps:
+            logger.info(f"  Missing: {ts}")
+        
+        # Consolidate consecutive missing timestamps into gaps
+        if not missing_timestamps:
+            return gaps
+        
+        # Sort missing timestamps
+        missing_timestamps.sort()
+        
+        # Group consecutive missing timestamps
+        current_gap_start = missing_timestamps[0]
+        current_gap_end = missing_timestamps[0]
+        
+        logger.info(f"Starting gap consolidation. First missing timestamp: {current_gap_start}")
+        
+        for i in range(1, len(missing_timestamps)):
+            current_time = missing_timestamps[i]
+            expected_previous = current_gap_end + timedelta(minutes=30)
+            
+            logger.info(f"Checking {current_time} against expected previous {expected_previous}")
+            logger.info(f"  Are they consecutive? {current_time == expected_previous}")
+            
+            if current_time == expected_previous:
+                # Consecutive missing timestamp, extend the gap
+                current_gap_end = current_time
+                logger.info(f"  Extending gap to: {current_gap_start} to {current_gap_end}")
+            else:
+                # Non-consecutive, save current gap and start new one
+                logger.info(f"  Non-consecutive! Saving gap: {current_gap_start} to {current_gap_end}")
+                gaps.append((current_gap_start, current_gap_end))
+                current_gap_start = current_time
+                current_gap_end = current_time
+                logger.info(f"  Starting new gap at: {current_time}")
+        
+        # Add the last gap
+        logger.info(f"Adding final gap: {current_gap_start} to {current_gap_end}")
+        gaps.append((current_gap_start, current_gap_end))
+        
+        logger.info(f"Final result: {len(gaps)} consolidated gaps")
+        for gap_start, gap_end in gaps:
+            if gap_start == gap_end:
+                logger.info(f"  Single point gap: {gap_start}")
+            else:
+                time_diff = (gap_end - gap_start).total_seconds() / (30 * 60)
+                logger.info(f"  Multi-point gap: {gap_start} to {gap_end} ({time_diff:.1f} hours)")
         
         return gaps
     

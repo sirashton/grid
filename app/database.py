@@ -8,6 +8,7 @@ import logging
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import List, Dict, Optional
+from utils.timestamp_utils import normalize_timestamp
 
 logger = logging.getLogger(__name__)
 
@@ -95,6 +96,9 @@ class Database:
             True if successful, False otherwise
         """
         try:
+            # Normalize timestamp to consistent format
+            normalized_timestamp = normalize_timestamp(timestamp)
+            
             with sqlite3.connect(self.db_path) as conn:
                 cursor = conn.cursor()
                 
@@ -102,7 +106,7 @@ class Database:
                 cursor.execute("""
                     SELECT is_forecast FROM carbon_intensity_30min_data 
                     WHERE timestamp = ?
-                """, (timestamp,))
+                """, (normalized_timestamp,))
                 existing_record = cursor.fetchone()
                 
                 if existing_record:
@@ -121,15 +125,15 @@ class Database:
                 cursor.execute("""
                     INSERT OR REPLACE INTO carbon_intensity_30min_data (timestamp, emissions, is_forecast)
                     VALUES (?, ?, ?)
-                """, (timestamp, emissions, is_forecast))
+                """, (normalized_timestamp, emissions, is_forecast))
                 conn.commit()
                 
                 if cursor.rowcount > 0:
                     data_type = "forecast" if is_forecast else "actual"
-                    logger.debug(f"Inserted/updated carbon intensity data ({data_type}): {timestamp} = {emissions}")
+                    logger.debug(f"Inserted/updated carbon intensity data ({data_type}): {normalized_timestamp} = {emissions}")
                     return True
                 else:
-                    logger.debug(f"Carbon intensity data unchanged: {timestamp}")
+                    logger.debug(f"Carbon intensity data unchanged: {normalized_timestamp}")
                     return True  # Not an error, just no change
                     
         except Exception as e:
@@ -274,6 +278,9 @@ class Database:
             True if successful, False otherwise
         """
         try:
+            # Normalize timestamp to consistent format
+            normalized_timestamp = normalize_timestamp(timestamp)
+            
             with sqlite3.connect(self.db_path) as conn:
                 cursor = conn.cursor()
                 
@@ -281,11 +288,11 @@ class Database:
                 cursor.execute("""
                     SELECT id FROM generation_30min_data 
                     WHERE timestamp = ?
-                """, (timestamp,))
+                """, (normalized_timestamp,))
                 existing_record = cursor.fetchone()
                 
                 if existing_record:
-                    logger.debug(f"Generation data already exists for {timestamp}")
+                    logger.debug(f"Generation data already exists for {normalized_timestamp}")
                     return True  # Not an error, just no change
                 
                 # Insert the record
@@ -296,7 +303,7 @@ class Database:
                         other, solar, wind_offshore, wind_onshore
                     ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """, (
-                    timestamp, settlement_period,
+                    normalized_timestamp, settlement_period,
                     fuel_data.get('biomass'),
                     fuel_data.get('fossil_gas'),
                     fuel_data.get('fossil_hard_coal'),
@@ -312,10 +319,10 @@ class Database:
                 conn.commit()
                 
                 if cursor.rowcount > 0:
-                    logger.debug(f"Inserted generation data: {timestamp}")
+                    logger.debug(f"Inserted generation data: {normalized_timestamp}")
                     return True
                 else:
-                    logger.debug(f"Generation data unchanged: {timestamp}")
+                    logger.debug(f"Generation data unchanged: {normalized_timestamp}")
                     return True  # Not an error, just no change
                     
         except Exception as e:

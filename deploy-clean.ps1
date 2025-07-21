@@ -143,7 +143,7 @@ if (Wait-Job $scpJob1 -Timeout 60) {
 }
 
 # Copy other files
-$filesToCopy = @("docker-compose.prod.yml", "Dockerfile", "requirements.txt", "clear_table_data.py")
+$filesToCopy = @("docker-compose.prod.yml", "Dockerfile", "requirements.txt", "clear_table_data.py", "interpolate_single_gaps.py", "normalize_database_timestamps.py")
 foreach ($file in $filesToCopy) {
     Write-Host "Copying $file..." -ForegroundColor Cyan
     $scpJob = Start-Job -ScriptBlock {

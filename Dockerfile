@@ -19,6 +19,10 @@ COPY app/ .
 COPY test_*.py ./
 COPY clear_*.py ./
 
+# Copy scripts to normalize and interpolate data
+COPY interpolate_*.py ./
+COPY normalize_*.py ./
+
 # Create necessary directories
 RUN mkdir -p /data /logs
 
