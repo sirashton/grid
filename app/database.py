@@ -423,4 +423,287 @@ class Database:
                 'earliest_data': None,
                 'latest_data': None,
                 'healthy': False
+            }
+    
+    def _validate_granularity(self, granularity_minutes: int) -> bool:
+        """Validate that granularity is a supported value"""
+        supported_granularities = [30, 60, 120, 240, 360, 720, 1440]  # 30min to 24hr
+        return granularity_minutes in supported_granularities
+    
+    def _get_supported_sources(self) -> List[str]:
+        """Get list of supported energy sources"""
+        return [
+            'biomass', 'fossil_gas', 'fossil_hard_coal', 'fossil_oil',
+            'hydro_pumped_storage', 'hydro_run_of_river', 'nuclear',
+            'other', 'solar', 'wind_offshore', 'wind_onshore'
+        ]
+    
+    def _validate_sources(self, sources: List[str]) -> List[str]:
+        """Validate and return list of valid sources"""
+        supported_sources = self._get_supported_sources()
+        valid_sources = [source for source in sources if source in supported_sources]
+        
+        if len(valid_sources) != len(sources):
+            invalid_sources = [source for source in sources if source not in supported_sources]
+            logger.warning(f"Invalid sources requested: {invalid_sources}")
+        
+        return valid_sources
+    
+    def _parse_source_groups(self, groups_json: str) -> Dict[str, List[str]]:
+        """Parse JSON string defining source groupings"""
+        try:
+            import json
+            groups = json.loads(groups_json)
+            
+            # Validate that all sources in groups are valid
+            supported_sources = self._get_supported_sources()
+            validated_groups = {}
+            
+            for group_name, sources in groups.items():
+                valid_sources = [source for source in sources if source in supported_sources]
+                if valid_sources:
+                    validated_groups[group_name] = valid_sources
+                else:
+                    logger.warning(f"Group '{group_name}' has no valid sources")
+            
+            return validated_groups
+            
+        except (json.JSONDecodeError, TypeError) as e:
+            logger.error(f"Failed to parse groups JSON: {e}")
+            return {}
+    
+    def get_generation_aggregated(
+        self,
+        start_time: datetime,
+        end_time: datetime,
+        granularity_minutes: int = 30,
+        sources: List[str] = None,
+        groups: Dict[str, List[str]] = None
+    ) -> Dict:
+        """
+        Get aggregated generation data by time bins
+        
+        Args:
+            start_time: Start of time range
+            end_time: End of time range
+            granularity_minutes: Time bin size in minutes (30, 60, 120, 240, 360, 720, 1440)
+            sources: List of energy sources to include (if None, includes all)
+            groups: Dictionary of group_name -> list of sources for grouped data
+            
+        Returns:
+            Dictionary with metadata and aggregated data
+        """
+        try:
+            # Validate granularity
+            if not self._validate_granularity(granularity_minutes):
+                raise ValueError(f"Unsupported granularity: {granularity_minutes}")
+            
+            # Validate and filter sources
+            if sources is None:
+                sources = self._get_supported_sources()
+            else:
+                sources = self._validate_sources(sources)
+            
+            if not sources:
+                raise ValueError("No valid sources specified")
+            
+            # Always get all supported sources for 'total' calculation
+            all_sources = self._get_supported_sources()
+            all_source_columns = []
+            for source in all_sources:
+                all_source_columns.extend([
+                    f"AVG({source}) as {source}_avg",
+                    f"MAX({source}) as {source}_max",
+                    f"MIN({source}) as {source}_min",
+                    f"COUNT({source}) as {source}_count"
+                ])
+            
+            # Build SQL query for aggregation (for all sources)
+            if granularity_minutes == 30:
+                time_format = "strftime('%Y-%m-%dT%H:%M:00Z', timestamp)"
+            elif granularity_minutes == 60:
+                time_format = "strftime('%Y-%m-%dT%H:00:00Z', timestamp)"
+            elif granularity_minutes == 120:
+                time_format = "strftime('%Y-%m-%dT%H:00:00Z', timestamp, '+' || (strftime('%H', timestamp) / 2) * 2 || ' hours')"
+            elif granularity_minutes == 240:
+                time_format = "strftime('%Y-%m-%dT%H:00:00Z', timestamp, '+' || (strftime('%H', timestamp) / 4) * 4 || ' hours')"
+            elif granularity_minutes == 360:
+                time_format = "strftime('%Y-%m-%dT%H:00:00Z', timestamp, '+' || (strftime('%H', timestamp) / 6) * 6 || ' hours')"
+            elif granularity_minutes == 720:
+                time_format = "strftime('%Y-%m-%dT%H:00:00Z', timestamp, '+' || (strftime('%H', timestamp) / 12) * 12 || ' hours')"
+            elif granularity_minutes == 1440:
+                time_format = "strftime('%Y-%m-%dT00:00:00Z', timestamp)"
+            else:
+                time_format = "strftime('%Y-%m-%dT%H:%M:00Z', timestamp)"
+            
+            sql = f"""
+                SELECT 
+                    {time_format} as time_bin,
+                    {', '.join(all_source_columns)}
+                FROM generation_30min_data
+                WHERE timestamp >= ? AND timestamp <= ?
+                GROUP BY time_bin
+                ORDER BY time_bin
+            """
+            
+            # Execute query
+            with sqlite3.connect(self.db_path) as conn:
+                cursor = conn.cursor()
+                cursor.execute(sql, (
+                    start_time.strftime('%Y-%m-%dT%H:%M:%SZ'),
+                    end_time.strftime('%Y-%m-%dT%H:%M:%SZ')
+                ))
+                
+                rows = cursor.fetchall()
+                
+                # Process results
+                data = []
+                for row in rows:
+                    time_bin = row[0]
+                    row_data = row[1:]  # Skip time_bin column
+                    
+                    # Build sources data (only for requested sources)
+                    sources_data = {}
+                    # Each source has 4 columns in the SQL result: avg, max, min, count, in that order.
+                    # So for source at index i, its columns are at i*4, i*4+1, i*4+2, i*4+3 in row_data.
+                    for i, source in enumerate(all_sources):
+                        avg_idx = i * 4
+                        max_idx = i * 4 + 1
+                        min_idx = i * 4 + 2
+                        count_idx = i * 4 + 3
+                        
+                        avg_val = row_data[avg_idx]
+                        max_val = row_data[max_idx]
+                        min_val = row_data[min_idx]
+                        count_val = row_data[count_idx]
+                        
+                        if source in sources:
+                            if count_val > 0:
+                                sources_data[source] = {
+                                    "avg": round(avg_val, 2) if avg_val is not None else None,
+                                    "high": round(max_val, 2) if max_val is not None else None,
+                                    "low": round(min_val, 2) if min_val is not None else None,
+                                    "data_points": count_val
+                                }
+                            else:
+                                sources_data[source] = {
+                                    "avg": None,
+                                    "high": None,
+                                    "low": None,
+                                    "data_points": 0
+                                }
+                    
+                    # Calculate groups if provided
+                    groups_data = {}
+                    if groups:
+                        for group_name, group_sources in groups.items():
+                            group_avgs = []
+                            group_highs = []
+                            group_lows = []
+                            group_counts = []
+                            
+                            for source in group_sources:
+                                idx = all_sources.index(source)
+                                avg_idx = idx * 4
+                                max_idx = idx * 4 + 1
+                                min_idx = idx * 4 + 2
+                                count_idx = idx * 4 + 3
+                                avg_val = row_data[avg_idx]
+                                max_val = row_data[max_idx]
+                                min_val = row_data[min_idx]
+                                count_val = row_data[count_idx]
+                                if avg_val is not None:
+                                    group_avgs.append(round(avg_val, 2))
+                                    group_highs.append(round(max_val, 2))
+                                    group_lows.append(round(min_val, 2))
+                                    group_counts.append(count_val)
+                            if group_avgs:
+                                groups_data[group_name] = {
+                                    "avg": round(sum(group_avgs), 2),
+                                    "high": round(sum(group_highs), 2),
+                                    "low": round(sum(group_lows), 2),
+                                    "data_points": sum(group_counts)
+                                }
+                            else:
+                                groups_data[group_name] = {
+                                    "avg": None,
+                                    "high": None,
+                                    "low": None,
+                                    "data_points": 0
+                                }
+                    # Always add 'total' group (sum of all sources)
+                    total_avg = 0.0
+                    total_high = 0.0
+                    total_low = 0.0
+                    total_count = 0
+                    any_data = False
+                    for i, source in enumerate(all_sources):
+                        avg_idx = i * 4
+                        max_idx = i * 4 + 1
+                        min_idx = i * 4 + 2
+                        count_idx = i * 4 + 3
+                        avg_val = row_data[avg_idx]
+                        max_val = row_data[max_idx]
+                        min_val = row_data[min_idx]
+                        count_val = row_data[count_idx]
+                        if avg_val is not None:
+                            total_avg += avg_val
+                            total_high += max_val if max_val is not None else 0.0
+                            total_low += min_val if min_val is not None else 0.0
+                            total_count += count_val
+                            any_data = True
+                    if any_data:
+                        groups_data["total"] = {
+                            "avg": round(total_avg, 2),
+                            "high": round(total_high, 2),
+                            "low": round(total_low, 2),
+                            "data_points": total_count
+                        }
+                    else:
+                        groups_data["total"] = {
+                            "avg": None,
+                            "high": None,
+                            "low": None,
+                            "data_points": 0
+                        }
+                    
+                    data.append({
+                        "timestamp": time_bin,
+                        "sources": sources_data,
+                        "groups": groups_data
+                    })
+                
+                # Calculate metadata
+                total_bins = len(data)
+                bins_with_data = sum(1 for bin_data in data if any(
+                    source_data["data_points"] > 0 
+                    for source_data in bin_data["sources"].values()
+                ))
+                
+                return {
+                    "metadata": {
+                        "start_time": start_time.strftime('%Y-%m-%dT%H:%M:%SZ'),
+                        "end_time": end_time.strftime('%Y-%m-%dT%H:%M:%SZ'),
+                        "granularity_minutes": granularity_minutes,
+                        "time_bins": total_bins,
+                        "data_quality": {
+                            "total_expected_bins": total_bins,
+                            "bins_with_data": bins_with_data,
+                            "missing_bins": total_bins - bins_with_data
+                        }
+                    },
+                    "data": data
+                }
+                
+        except Exception as e:
+            logger.error(f"Failed to get aggregated generation data: {e}")
+            return {
+                "metadata": {
+                    "error": str(e),
+                    "start_time": start_time.strftime('%Y-%m-%dT%H:%M:%SZ'),
+                    "end_time": end_time.strftime('%Y-%m-%dT%H:%M:%SZ'),
+                    "granularity_minutes": granularity_minutes,
+                    "time_bins": 0
+                },
+                "data": []
             } 
