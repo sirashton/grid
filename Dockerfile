@@ -23,11 +23,18 @@ COPY clear_*.py ./
 COPY interpolate_*.py ./
 COPY normalize_*.py ./
 
+# Copy migration script
+COPY migrate_add_timestamp_sql.py ./
+COPY migrate_deduplicate_and_unique.py ./
+
 # Create necessary directories
 RUN mkdir -p /data /logs
 
 # Make scripts executable
 RUN chmod +x main.py
 
-# Run the application
-CMD ["python", "main.py"] 
+# Expose API port
+EXPOSE 9714
+
+# Replace the CMD to run the migration and then start the API
+CMD ["sh", "-c", "python3 migrate_deduplicate_and_unique.py && uvicorn api:app --host 0.0.0.0 --port 9714"] 

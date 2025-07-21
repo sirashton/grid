@@ -9,6 +9,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import List, Dict, Optional
 from utils.timestamp_utils import normalize_timestamp
+from utils.timestamp_utils import iso8601_to_sqlite_datetime
 
 logger = logging.getLogger(__name__)
 
@@ -265,68 +266,23 @@ class Database:
             logger.error(f"Database health check failed: {e}")
             return False
     
-    def insert_generation_data(self, timestamp: str, settlement_period: int, **fuel_data) -> bool:
+    def insert_generation_data(self, **kwargs):
         """
-        Insert generation data by fuel type
-        
-        Args:
-            timestamp: ISO format timestamp string
-            settlement_period: Settlement period number
-            **fuel_data: Keyword arguments for fuel types (biomass, fossil_gas, etc.)
-            
-        Returns:
-            True if successful, False otherwise
+        Insert or update a row in generation_30min_data using INSERT OR REPLACE to enforce uniqueness on timestamp and timestamp_sql.
         """
+        import sqlite3
+        db_path = '/data/grid.db' if not hasattr(self, 'db_path') else self.db_path
+        columns = ', '.join(kwargs.keys())
+        placeholders = ', '.join(['?'] * len(kwargs))
+        sql = f"INSERT OR REPLACE INTO generation_30min_data ({columns}) VALUES ({placeholders})"
         try:
-            # Normalize timestamp to consistent format
-            normalized_timestamp = normalize_timestamp(timestamp)
-            
-            with sqlite3.connect(self.db_path) as conn:
+            with sqlite3.connect(db_path) as conn:
                 cursor = conn.cursor()
-                
-                # Check if record exists
-                cursor.execute("""
-                    SELECT id FROM generation_30min_data 
-                    WHERE timestamp = ?
-                """, (normalized_timestamp,))
-                existing_record = cursor.fetchone()
-                
-                if existing_record:
-                    logger.debug(f"Generation data already exists for {normalized_timestamp}")
-                    return True  # Not an error, just no change
-                
-                # Insert the record
-                cursor.execute("""
-                    INSERT INTO generation_30min_data (
-                        timestamp, settlement_period, biomass, fossil_gas, fossil_hard_coal,
-                        fossil_oil, hydro_pumped_storage, hydro_run_of_river, nuclear,
-                        other, solar, wind_offshore, wind_onshore
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                """, (
-                    normalized_timestamp, settlement_period,
-                    fuel_data.get('biomass'),
-                    fuel_data.get('fossil_gas'),
-                    fuel_data.get('fossil_hard_coal'),
-                    fuel_data.get('fossil_oil'),
-                    fuel_data.get('hydro_pumped_storage'),
-                    fuel_data.get('hydro_run_of_river'),
-                    fuel_data.get('nuclear'),
-                    fuel_data.get('other'),
-                    fuel_data.get('solar'),
-                    fuel_data.get('wind_offshore'),
-                    fuel_data.get('wind_onshore')
-                ))
+                cursor.execute(sql, tuple(kwargs.values()))
                 conn.commit()
-                
-                if cursor.rowcount > 0:
-                    logger.debug(f"Inserted generation data: {normalized_timestamp}")
-                    return True
-                else:
-                    logger.debug(f"Generation data unchanged: {normalized_timestamp}")
-                    return True  # Not an error, just no change
-                    
+            return True
         except Exception as e:
-            logger.error(f"Failed to insert generation data: {e}")
+            print(f"[DB] Failed to insert/update generation data: {e}")
             return False
     
     def get_latest_generation_data(self, limit: int = 1) -> List[Dict]:
@@ -472,238 +428,40 @@ class Database:
             logger.error(f"Failed to parse groups JSON: {e}")
             return {}
     
-    def get_generation_aggregated(
-        self,
-        start_time: datetime,
-        end_time: datetime,
-        granularity_minutes: int = 30,
-        sources: List[str] = None,
-        groups: Dict[str, List[str]] = None
-    ) -> Dict:
-        """
-        Get aggregated generation data by time bins
-        
-        Args:
-            start_time: Start of time range
-            end_time: End of time range
-            granularity_minutes: Time bin size in minutes (30, 60, 120, 240, 360, 720, 1440)
-            sources: List of energy sources to include (if None, includes all)
-            groups: Dictionary of group_name -> list of sources for grouped data
-            
-        Returns:
-            Dictionary with metadata and aggregated data
-        """
+    # Remove get_generation_aggregated and all related aggregation/binning code
+
+def migrate_add_timestamp_sql_column():
+    """
+    Add a timestamp_sql column to both tables if it doesn't exist, and backfill it for all rows.
+    """
+    import sqlite3
+    from utils.timestamp_utils import iso8601_to_sql_datetime
+    db_path = '/data/grid.db'
+    with sqlite3.connect(db_path) as conn:
+        cursor = conn.cursor()
+        # Add column to generation_30min_data
         try:
-            # Validate granularity
-            if not self._validate_granularity(granularity_minutes):
-                raise ValueError(f"Unsupported granularity: {granularity_minutes}")
-            
-            # Validate and filter sources
-            if sources is None:
-                sources = self._get_supported_sources()
-            else:
-                sources = self._validate_sources(sources)
-            
-            if not sources:
-                raise ValueError("No valid sources specified")
-            
-            # Always get all supported sources for 'total' calculation
-            all_sources = self._get_supported_sources()
-            all_source_columns = []
-            for source in all_sources:
-                all_source_columns.extend([
-                    f"AVG({source}) as {source}_avg",
-                    f"MAX({source}) as {source}_max",
-                    f"MIN({source}) as {source}_min",
-                    f"COUNT({source}) as {source}_count"
-                ])
-            
-            # Build SQL query for aggregation (for all sources)
-            if granularity_minutes == 30:
-                time_format = "strftime('%Y-%m-%dT%H:%M:00Z', timestamp)"
-            elif granularity_minutes == 60:
-                time_format = "strftime('%Y-%m-%dT%H:00:00Z', timestamp)"
-            elif granularity_minutes == 120:
-                time_format = "strftime('%Y-%m-%dT%H:00:00Z', timestamp, '+' || (strftime('%H', timestamp) / 2) * 2 || ' hours')"
-            elif granularity_minutes == 240:
-                time_format = "strftime('%Y-%m-%dT%H:00:00Z', timestamp, '+' || (strftime('%H', timestamp) / 4) * 4 || ' hours')"
-            elif granularity_minutes == 360:
-                time_format = "strftime('%Y-%m-%dT%H:00:00Z', timestamp, '+' || (strftime('%H', timestamp) / 6) * 6 || ' hours')"
-            elif granularity_minutes == 720:
-                time_format = "strftime('%Y-%m-%dT%H:00:00Z', timestamp, '+' || (strftime('%H', timestamp) / 12) * 12 || ' hours')"
-            elif granularity_minutes == 1440:
-                time_format = "strftime('%Y-%m-%dT00:00:00Z', timestamp)"
-            else:
-                time_format = "strftime('%Y-%m-%dT%H:%M:00Z', timestamp)"
-            
-            sql = f"""
-                SELECT 
-                    {time_format} as time_bin,
-                    {', '.join(all_source_columns)}
-                FROM generation_30min_data
-                WHERE timestamp >= ? AND timestamp <= ?
-                GROUP BY time_bin
-                ORDER BY time_bin
-            """
-            
-            # Execute query
-            with sqlite3.connect(self.db_path) as conn:
-                cursor = conn.cursor()
-                cursor.execute(sql, (
-                    start_time.strftime('%Y-%m-%dT%H:%M:%SZ'),
-                    end_time.strftime('%Y-%m-%dT%H:%M:%SZ')
-                ))
-                
-                rows = cursor.fetchall()
-                
-                # Process results
-                data = []
-                for row in rows:
-                    time_bin = row[0]
-                    row_data = row[1:]  # Skip time_bin column
-                    
-                    # Build sources data (only for requested sources)
-                    sources_data = {}
-                    # Each source has 4 columns in the SQL result: avg, max, min, count, in that order.
-                    # So for source at index i, its columns are at i*4, i*4+1, i*4+2, i*4+3 in row_data.
-                    for i, source in enumerate(all_sources):
-                        avg_idx = i * 4
-                        max_idx = i * 4 + 1
-                        min_idx = i * 4 + 2
-                        count_idx = i * 4 + 3
-                        
-                        avg_val = row_data[avg_idx]
-                        max_val = row_data[max_idx]
-                        min_val = row_data[min_idx]
-                        count_val = row_data[count_idx]
-                        
-                        if source in sources:
-                            if count_val > 0:
-                                sources_data[source] = {
-                                    "avg": round(avg_val, 2) if avg_val is not None else None,
-                                    "high": round(max_val, 2) if max_val is not None else None,
-                                    "low": round(min_val, 2) if min_val is not None else None,
-                                    "data_points": count_val
-                                }
-                            else:
-                                sources_data[source] = {
-                                    "avg": None,
-                                    "high": None,
-                                    "low": None,
-                                    "data_points": 0
-                                }
-                    
-                    # Calculate groups if provided
-                    groups_data = {}
-                    if groups:
-                        for group_name, group_sources in groups.items():
-                            group_avgs = []
-                            group_highs = []
-                            group_lows = []
-                            group_counts = []
-                            
-                            for source in group_sources:
-                                idx = all_sources.index(source)
-                                avg_idx = idx * 4
-                                max_idx = idx * 4 + 1
-                                min_idx = idx * 4 + 2
-                                count_idx = idx * 4 + 3
-                                avg_val = row_data[avg_idx]
-                                max_val = row_data[max_idx]
-                                min_val = row_data[min_idx]
-                                count_val = row_data[count_idx]
-                                if avg_val is not None:
-                                    group_avgs.append(round(avg_val, 2))
-                                    group_highs.append(round(max_val, 2))
-                                    group_lows.append(round(min_val, 2))
-                                    group_counts.append(count_val)
-                            if group_avgs:
-                                groups_data[group_name] = {
-                                    "avg": round(sum(group_avgs), 2),
-                                    "high": round(sum(group_highs), 2),
-                                    "low": round(sum(group_lows), 2),
-                                    "data_points": sum(group_counts)
-                                }
-                            else:
-                                groups_data[group_name] = {
-                                    "avg": None,
-                                    "high": None,
-                                    "low": None,
-                                    "data_points": 0
-                                }
-                    # Always add 'total' group (sum of all sources)
-                    total_avg = 0.0
-                    total_high = 0.0
-                    total_low = 0.0
-                    total_count = 0
-                    any_data = False
-                    for i, source in enumerate(all_sources):
-                        avg_idx = i * 4
-                        max_idx = i * 4 + 1
-                        min_idx = i * 4 + 2
-                        count_idx = i * 4 + 3
-                        avg_val = row_data[avg_idx]
-                        max_val = row_data[max_idx]
-                        min_val = row_data[min_idx]
-                        count_val = row_data[count_idx]
-                        if avg_val is not None:
-                            total_avg += avg_val
-                            total_high += max_val if max_val is not None else 0.0
-                            total_low += min_val if min_val is not None else 0.0
-                            total_count += count_val
-                            any_data = True
-                    if any_data:
-                        groups_data["total"] = {
-                            "avg": round(total_avg, 2),
-                            "high": round(total_high, 2),
-                            "low": round(total_low, 2),
-                            "data_points": total_count
-                        }
-                    else:
-                        groups_data["total"] = {
-                            "avg": None,
-                            "high": None,
-                            "low": None,
-                            "data_points": 0
-                        }
-                    
-                    data.append({
-                        "timestamp": time_bin,
-                        "sources": sources_data,
-                        "groups": groups_data
-                    })
-                
-                # Calculate metadata
-                total_bins = len(data)
-                bins_with_data = sum(1 for bin_data in data if any(
-                    source_data["data_points"] > 0 
-                    for source_data in bin_data["sources"].values()
-                ))
-                
-                return {
-                    "metadata": {
-                        "start_time": start_time.strftime('%Y-%m-%dT%H:%M:%SZ'),
-                        "end_time": end_time.strftime('%Y-%m-%dT%H:%M:%SZ'),
-                        "granularity_minutes": granularity_minutes,
-                        "time_bins": total_bins,
-                        "data_quality": {
-                            "total_expected_bins": total_bins,
-                            "bins_with_data": bins_with_data,
-                            "missing_bins": total_bins - bins_with_data
-                        }
-                    },
-                    "data": data
-                }
-                
-        except Exception as e:
-            logger.error(f"Failed to get aggregated generation data: {e}")
-            return {
-                "metadata": {
-                    "error": str(e),
-                    "start_time": start_time.strftime('%Y-%m-%dT%H:%M:%SZ'),
-                    "end_time": end_time.strftime('%Y-%m-%dT%H:%M:%SZ'),
-                    "granularity_minutes": granularity_minutes,
-                    "time_bins": 0
-                },
-                "data": []
-            } 
+            cursor.execute("ALTER TABLE generation_30min_data ADD COLUMN timestamp_sql DATETIME")
+        except sqlite3.OperationalError:
+            pass  # already exists
+        # Add column to carbon_intensity_30min_data
+        try:
+            cursor.execute("ALTER TABLE carbon_intensity_30min_data ADD COLUMN timestamp_sql DATETIME")
+        except sqlite3.OperationalError:
+            pass  # already exists
+        # Backfill generation_30min_data
+        cursor.execute("SELECT id, timestamp FROM generation_30min_data WHERE timestamp_sql IS NULL OR timestamp_sql = ''")
+        rows = cursor.fetchall()
+        for row in rows:
+            row_id, ts = row
+            ts_sql = iso8601_to_sql_datetime(ts)
+            cursor.execute("UPDATE generation_30min_data SET timestamp_sql = ? WHERE id = ?", (ts_sql, row_id))
+        # Backfill carbon_intensity_30min_data
+        cursor.execute("SELECT id, timestamp FROM carbon_intensity_30min_data WHERE timestamp_sql IS NULL OR timestamp_sql = ''")
+        rows = cursor.fetchall()
+        for row in rows:
+            row_id, ts = row
+            ts_sql = iso8601_to_sql_datetime(ts)
+            cursor.execute("UPDATE carbon_intensity_30min_data SET timestamp_sql = ? WHERE id = ?", (ts_sql, row_id))
+        conn.commit()
+    print("Migration complete: timestamp_sql columns added and backfilled.") 

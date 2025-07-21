@@ -90,3 +90,43 @@ def get_timestamp_format_info(timestamp_str: str) -> dict:
         info['error'] = str(e)
     
     return info 
+
+def iso8601_to_sqlite_datetime(ts: str) -> str:
+    """
+    Convert ISO8601 timestamp (with 'T' and 'Z') to SQLite-compatible format ('YYYY-MM-DD HH:MM').
+    E.g. '2025-07-20T00:30Z' -> '2025-07-20 00:30'
+    """
+    if not ts:
+        return ts
+    # Remove 'Z' if present
+    ts = ts.replace('Z', '')
+    # Replace 'T' with space
+    ts = ts.replace('T', ' ')
+    # Remove seconds if present
+    if len(ts) > 16:
+        ts = ts[:16]
+    return ts 
+
+def iso8601_to_sql_datetime(ts: str) -> str:
+    """
+    Convert a 17- or 20-character ISO8601 timestamp (with 'T' and 'Z') to SQL datetime format (YYYY-MM-DD HH:MM:SS).
+    Handles:
+      - '2025-07-20T00:30Z' -> '2025-07-20 00:30:00'
+      - '2025-07-20T00:30:00Z' -> '2025-07-20 00:30:00'
+    """
+    if not ts:
+        return ts
+    ts = ts.replace('Z', '')
+    ts = ts.replace('T', ' ')
+    if len(ts) == 16:  # 'YYYY-MM-DD HH:MM'
+        return ts + ':00'
+    elif len(ts) == 19:  # 'YYYY-MM-DD HH:MM:SS'
+        return ts
+    else:
+        # Try to parse with datetime for robustness
+        from datetime import datetime
+        try:
+            dt = datetime.fromisoformat(ts)
+            return dt.strftime('%Y-%m-%d %H:%M:%S')
+        except Exception:
+            return ts  # fallback, may be invalid 

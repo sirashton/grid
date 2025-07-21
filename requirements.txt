@@ -1,3 +1,5 @@
 # Core dependencies for Grid Tracker
 # We'll add more as we implement specific features 
-requests==2.31.0 
+requests==2.31.0
+fastapi==0.110.2
+uvicorn==0.29.0 

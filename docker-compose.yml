@@ -1,19 +1,15 @@
 services:
-  grid-tracker:
+  api:
     build: .
-    container_name: grid-tracker-local
+    command: sh -c "python3 migrate_deduplicate_and_unique.py && uvicorn api:app --host 0.0.0.0 --port 9714"
     volumes:
       - ./volumes/database:/data
       - ./volumes/logs:/logs
-    environment:
-      - CARBON_INTENSITY_COLLECTION_INTERVAL=60  # 1 minute for local testing
-      - HEALTH_CHECK_INTERVAL=120 #15 min
-      - MAIN_LOOP_INTERVAL=10
-      - PYTHONUNBUFFERED=1
-    restart: unless-stopped
-
-volumes:
-  database:
-    driver: local
-  logs:
-    driver: local 
+    ports:
+      - "9714:9714"
+  worker:
+    build: .
+    command: python3 main.py
+    volumes:
+      - ./volumes/database:/data
+      - ./volumes/logs:/logs 

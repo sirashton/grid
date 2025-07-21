@@ -10,6 +10,7 @@ import signal
 from datetime import datetime, timezone, timedelta
 from pathlib import Path
 from typing import List, Tuple
+import subprocess
 
 from config import Config
 from database import Database
@@ -17,6 +18,7 @@ from carbon_intensity_api import CarbonIntensityAPI
 from elexon_bm_api import ElexonBMAPI
 from data_gap_detector import DataGapDetector
 from utils.backfill_utils import run_backfill_cycle
+from migrate_deduplicate_and_unique import deduplicate_and_add_unique
 
 # Configure logging
 logging.basicConfig(
@@ -716,7 +718,14 @@ def main():
     """Main entry point"""
     # Ensure log directory exists
     Path("/logs").mkdir(exist_ok=True)
-    
+
+    # Run deduplication/unique migration on startup
+    print("Running deduplication/unique migration...")
+    try:
+        deduplicate_and_add_unique()
+    except Exception as e:
+        print(f"[Migration] Failed to run migration: {e}")
+
     # Create and run tracker
     tracker = GridTracker()
     tracker.main_loop()
