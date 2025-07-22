@@ -464,4 +464,3 @@ def migrate_add_timestamp_sql_column():
             ts_sql = iso8601_to_sql_datetime(ts)
             cursor.execute("UPDATE carbon_intensity_30min_data SET timestamp_sql = ? WHERE id = ?", (ts_sql, row_id))
         conn.commit()
-    print("Migration complete: timestamp_sql columns added and backfilled.") 

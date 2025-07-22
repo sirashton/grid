@@ -32,9 +32,3 @@ RUN mkdir -p /data /logs
 
 # Make scripts executable
 RUN chmod +x main.py
-
-# Expose API port
-EXPOSE 9714
-
-# Replace the CMD to run the migration and then start the API
-CMD ["sh", "-c", "python3 migrate_deduplicate_and_unique.py && uvicorn api:app --host 0.0.0.0 --port 9714"] 

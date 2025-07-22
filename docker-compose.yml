@@ -1,7 +1,8 @@
+version: '3.8'
 services:
   api:
     build: .
-    command: sh -c "python3 migrate_deduplicate_and_unique.py && uvicorn api:app --host 0.0.0.0 --port 9714"
+    command: sh -c "python3 migrate_add_timestamp_sql.py && python3 migrate_deduplicate_and_unique.py && uvicorn api:app --host 0.0.0.0 --port 9714"
     volumes:
       - ./volumes/database:/data
       - ./volumes/logs:/logs
@@ -12,4 +13,9 @@ services:
     command: python3 main.py
     volumes:
       - ./volumes/database:/data
-      - ./volumes/logs:/logs 
+      - ./volumes/logs:/logs
+    environment:
+      - CARBON_INTENSITY_COLLECTION_INTERVAL=60
+      - HEALTH_CHECK_INTERVAL=120
+      - MAIN_LOOP_INTERVAL=10
+      - PYTHONUNBUFFERED=1 
