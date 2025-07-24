@@ -30,9 +30,10 @@ def get_generation_aggregated(
     end_time: str = Query(..., description="End time (ISO 8601)"),
     granularity_minutes: int = Query(30, description="Granularity in minutes (multiple of 30)"),
     sources: str = Query("solar", description="Comma-separated list of sources (default: solar)"),
-    groups: Optional[str] = Query(None, description="JSON string of group definitions (optional)")
+    groups: Optional[str] = Query(None, description="JSON string of group definitions (optional)"),
+    as_percent: bool = Query(False, description="Return values as percent of total generation (0-100)")
 ):
-    print(f"[Grid Tracker API v{API_VERSION}] /api/generation/aggregated called with start_time={start_time}, end_time={end_time}, granularity_minutes={granularity_minutes}, sources={sources}, groups={groups}")
+    print(f"[Grid Tracker API v{API_VERSION}] /api/generation/aggregated called with start_time={start_time}, end_time={end_time}, granularity_minutes={granularity_minutes}, sources={sources}, groups={groups}, as_percent={as_percent}")
     """
     Minimal implementation: returns binned data for 'solar' and a groups field with the group name and all values as null.
     """
@@ -59,15 +60,24 @@ def get_generation_aggregated(
     # Dynamically build SQL columns for requested sources
     agg_cols = []
     for src in source_list:
-        agg_cols.extend([
-            f"AVG({src}) as {src}_avg",
-            f"MAX({src}) as {src}_max",
-            f"MIN({src}) as {src}_min",
-            f"COUNT({src}) as {src}_count"
-        ])
+        if as_percent:
+            # Use NULLIF to avoid division by zero
+            agg_cols.extend([
+                f"AVG((1.0 * {src} / NULLIF(total,0)) * 100) as {src}_avg_percent",
+                f"MAX((1.0 * {src} / NULLIF(total,0)) * 100) as {src}_max_percent",
+                f"MIN((1.0 * {src} / NULLIF(total,0)) * 100) as {src}_min_percent",
+                f"COUNT({src}) as {src}_count"
+            ])
+        else:
+            agg_cols.extend([
+                f"AVG({src}) as {src}_avg",
+                f"MAX({src}) as {src}_max",
+                f"MIN({src}) as {src}_min",
+                f"COUNT({src}) as {src}_count"
+            ])
     sql = f'''
         WITH binned AS (
-            SELECT timestamp_sql, {', '.join(source_list)}, {bin_expr} as bin_index
+            SELECT timestamp_sql, total, {', '.join(source_list)}, {bin_expr} as bin_index
             FROM generation_30min_data
             WHERE timestamp_sql >= ? AND timestamp_sql < ?
         )
@@ -100,12 +110,20 @@ def get_generation_aggregated(
         for i, src in enumerate(source_list):
             base = 1 + i * 4
             avg, high, low, count = row[base], row[base+1], row[base+2], row[base+3]
-            sources_data[src] = {
-                "avg": round(avg, 2) if avg is not None else None,
-                "high": round(high, 2) if high is not None else None,
-                "low": round(low, 2) if low is not None else None,
-                "data_points": count
-            }
+            if as_percent:
+                sources_data[src] = {
+                    "avg_percent": round(avg, 2) if avg is not None else None,
+                    "high_percent": round(high, 2) if high is not None else None,
+                    "low_percent": round(low, 2) if low is not None else None,
+                    "data_points": count
+                }
+            else:
+                sources_data[src] = {
+                    "avg": round(avg, 2) if avg is not None else None,
+                    "high": round(high, 2) if high is not None else None,
+                    "low": round(low, 2) if low is not None else None,
+                    "data_points": count
+                }
         groups_data = {}
         for group_name in group_dict.keys():
             groups_data[group_name] = {
@@ -125,7 +143,8 @@ def get_generation_aggregated(
             "start_time": start_time,
             "end_time": end_time,
             "granularity_minutes": granularity_minutes,
-            "time_bins": len(data)
+            "time_bins": len(data),
+            "as_percent": as_percent
         },
         "data": data
     })

@@ -151,7 +151,9 @@ $filesToCopy = @(
     "interpolate_single_gaps.py",
     "normalize_database_timestamps.py",
     "migrate_deduplicate_and_unique.py",
-    "migrate_add_timestamp_sql.py"
+    "migrate_add_timestamp_sql.py",
+    "run_all_migrations.py",
+    "migrate_add_total_column.py"
 )
 foreach ($file in $filesToCopy) {
     Write-Host "Copying $file..." -ForegroundColor Cyan
