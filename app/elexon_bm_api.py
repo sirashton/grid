@@ -89,7 +89,7 @@ class ElexonBMAPI:
                 response.raise_for_status()
                 
                 data = response.json()
-                print(f"Raw API response: {data}")
+                # print(f"Raw API response: {data}")
                 
                 # Extract and format data points
                 data_points = []

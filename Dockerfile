@@ -25,7 +25,9 @@ COPY normalize_*.py ./
 
 # Copy migration script
 COPY migrate_add_timestamp_sql.py ./
+COPY migrate_add_total_column.py ./
 COPY migrate_deduplicate_and_unique.py ./
+COPY run_all_migrations.py ./
 
 # Create necessary directories
 RUN mkdir -p /data /logs

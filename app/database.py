@@ -429,38 +429,3 @@ class Database:
             return {}
     
     # Remove get_generation_aggregated and all related aggregation/binning code
-
-def migrate_add_timestamp_sql_column():
-    """
-    Add a timestamp_sql column to both tables if it doesn't exist, and backfill it for all rows.
-    """
-    import sqlite3
-    from utils.timestamp_utils import iso8601_to_sql_datetime
-    db_path = '/data/grid.db'
-    with sqlite3.connect(db_path) as conn:
-        cursor = conn.cursor()
-        # Add column to generation_30min_data
-        try:
-            cursor.execute("ALTER TABLE generation_30min_data ADD COLUMN timestamp_sql DATETIME")
-        except sqlite3.OperationalError:
-            pass  # already exists
-        # Add column to carbon_intensity_30min_data
-        try:
-            cursor.execute("ALTER TABLE carbon_intensity_30min_data ADD COLUMN timestamp_sql DATETIME")
-        except sqlite3.OperationalError:
-            pass  # already exists
-        # Backfill generation_30min_data
-        cursor.execute("SELECT id, timestamp FROM generation_30min_data WHERE timestamp_sql IS NULL OR timestamp_sql = ''")
-        rows = cursor.fetchall()
-        for row in rows:
-            row_id, ts = row
-            ts_sql = iso8601_to_sql_datetime(ts)
-            cursor.execute("UPDATE generation_30min_data SET timestamp_sql = ? WHERE id = ?", (ts_sql, row_id))
-        # Backfill carbon_intensity_30min_data
-        cursor.execute("SELECT id, timestamp FROM carbon_intensity_30min_data WHERE timestamp_sql IS NULL OR timestamp_sql = ''")
-        rows = cursor.fetchall()
-        for row in rows:
-            row_id, ts = row
-            ts_sql = iso8601_to_sql_datetime(ts)
-            cursor.execute("UPDATE carbon_intensity_30min_data SET timestamp_sql = ? WHERE id = ?", (ts_sql, row_id))
-        conn.commit()
