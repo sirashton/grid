@@ -26,6 +26,8 @@
         <canvas id="genChart"></canvas>
         <h2>Generation as % of Total</h2>
         <canvas id="percentChart"></canvas>
+        <h2>Average with Min/Max Range</h2>
+        <canvas id="rangeChart"></canvas>
     </div>
     <script>
       function loadCharts() {
@@ -98,6 +100,97 @@
                     responsive: true,
                     plugins: { legend: { position: 'top' } },
                     scales: { x: { display: true, title: { display: true, text: 'Timestamp' } }, y: { display: true, title: { display: true, text: '% of Total' }, min: 0, max: 100 } }
+                  }
+                });
+              });
+
+            // Range chart (avg line, min/max area)
+            fetch(apiUrl)
+              .then(r => r.json())
+              .then(data => {
+                const labels = data.data.map(row => row.timestamp);
+                const sources = ['solar', 'wind_onshore', 'wind_offshore', 'fossil_gas'];
+                const colors = {
+                  solar: '#f9c846',
+                  wind_onshore: '#4a90e2',
+                  wind_offshore: '#00b894',
+                  fossil_gas: '#e17055'
+                };
+                const ctx3 = document.getElementById('rangeChart').getContext('2d');
+                if(window.rangeChartObj) window.rangeChartObj.destroy();
+                const datasets = [];
+                sources.forEach((source) => {
+                  // Min (low) line (invisible, for area fill)
+                  datasets.push({
+                    label: source + ' min',
+                    data: data.data.map(row => row.sources[source].low),
+                    borderColor: colors[source],
+                    backgroundColor: colors[source] + '22',
+                    fill: '+1',
+                    pointRadius: 0,
+                    borderWidth: 0,
+                    order: 1
+                  });
+                  // Max (high) line (invisible, for area fill)
+                  datasets.push({
+                    label: source + ' max',
+                    data: data.data.map(row => row.sources[source].high),
+                    borderColor: colors[source],
+                    backgroundColor: colors[source] + '22',
+                    fill: false,
+                    pointRadius: 0,
+                    borderWidth: 0,
+                    order: 1
+                  });
+                  // Avg line (visible)
+                  datasets.push({
+                    label: source + ' avg',
+                    data: data.data.map(row => row.sources[source].avg),
+                    borderColor: colors[source],
+                    backgroundColor: colors[source] + '22',
+                    fill: false,
+                    pointRadius: 0,
+                    borderWidth: 2,
+                    order: 2,
+                    tension: 0.2
+                  });
+                });
+                window.rangeChartObj = new Chart(ctx3, {
+                  type: 'line',
+                  data: { labels, datasets },
+                  options: {
+                    responsive: true,
+                    plugins: {
+                      legend: {
+                        display: true,
+                        labels: {
+                          filter: function(item, chart) {
+                            // Only show avg lines in the legend
+                            return item.text.endsWith('avg');
+                          }
+                        },
+                        onClick: function(e, legendItem, legend) {
+                          const chart = legend.chart;
+                          const source = legendItem.text.replace(' avg', '');
+                          // Find all datasets for this source (min, max, avg)
+                          chart.data.datasets.forEach((ds, i) => {
+                            if (ds.label.startsWith(source + ' ')) {
+                              const meta = chart.getDatasetMeta(i);
+                              // Toggle all three together based on avg line
+                              if (legendItem.datasetIndex === i || ds.label.endsWith('min') || ds.label.endsWith('max')) {
+                                meta.hidden = meta.hidden === null ? !chart.data.datasets[legendItem.datasetIndex].hidden : null;
+                              }
+                            }
+                          });
+                          chart.update();
+                        }
+                      }
+                    },
+                    elements: { point: { radius: 0 } },
+                    scales: {
+                      x: { display: true, title: { display: true, text: 'Timestamp' } },
+                      y: { display: true, title: { display: true, text: 'MW' } }
+                    }
                   }
                 });
               });
