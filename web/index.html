@@ -1,0 +1,98 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Grid Generation - Last 7 Days</title>
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+    <style>
+        body { font-family: sans-serif; margin: 2em; background: #f9f9f9; }
+        #chart-container { width: 100%; max-width: 900px; margin: 0 auto; background: #fff; padding: 2em; border-radius: 8px; box-shadow: 0 2px 8px #0001; }
+        h1 { text-align: center; }
+    </style>
+</head>
+<body>
+    <h1>Grid Generation (Last 7 Days)</h1>
+    <div id="chart-container">
+        <canvas id="genChart"></canvas>
+        <h2>Generation as % of Total</h2>
+        <canvas id="percentChart"></canvas>
+    </div>
+    <script>
+      // Helper to get ISO8601 for N days ago
+      function isoDateNDaysAgo(n) {
+          const d = new Date();
+          d.setHours(0,0,0,0);
+          d.setDate(d.getDate() - n);
+          return d.toISOString().slice(0,19) + 'Z';
+      }
+      const end = new Date();
+      end.setHours(0,0,0,0);
+      end.setDate(end.getDate() + 1); // include today
+      const start_time = isoDateNDaysAgo(7);
+      const end_time = end.toISOString().slice(0,19) + 'Z';
+      const apiUrl = `http://188.166.155.100:9714/api/generation/aggregated?start_time=${start_time}&end_time=${end_time}&granularity_minutes=30&sources=solar,wind_onshore,wind_offshore,fossil_gas`;
+
+      fetch(apiUrl)
+        .then(r => r.json())
+        .then(data => {
+          const labels = data.data.map(row => row.timestamp);
+          const solar = data.data.map(row => row.sources.solar.avg);
+          const wind = data.data.map(row => row.sources.wind_onshore.avg);
+          const windOffshore = data.data.map(row => row.sources.wind_offshore.avg);
+          const gas = data.data.map(row => row.sources.fossil_gas.avg);
+          const ctx = document.getElementById('genChart').getContext('2d');
+          new Chart(ctx, {
+            type: 'line',
+            data: {
+              labels: labels,
+              datasets: [
+                { label: 'Solar (MW)', data: solar, borderColor: '#f9c846', backgroundColor: '#f9c84622', fill: false },
+                { label: 'Wind Onshore (MW)', data: wind, borderColor: '#4a90e2', backgroundColor: '#4a90e222', fill: false },
+                { label: 'Wind Offshore (MW)', data: windOffshore, borderColor: '#00b894', backgroundColor: '#00b89422', fill: false },
+                { label: 'Gas (MW)', data: gas, borderColor: '#e17055', backgroundColor: '#e1705522', fill: false }
+              ]
+            },
+            options: {
+              responsive: true,
+              plugins: { legend: { position: 'top' } },
+              scales: { x: { display: true, title: { display: true, text: 'Timestamp' } }, y: { display: true, title: { display: true, text: 'MW' } } }
+            }
+          });
+
+          // Percent chart
+          fetch(apiUrl + '&as_percent=true')
+            .then(r => r.json())
+            .then(percentData => {
+              const percentLabels = percentData.data.map(row => row.timestamp);
+              const solarPercent = percentData.data.map(row => row.sources.solar.avg_percent);
+              const windPercent = percentData.data.map(row => row.sources.wind_onshore.avg_percent);
+              const windOffshorePercent = percentData.data.map(row => row.sources.wind_offshore.avg_percent);
+              const gasPercent = percentData.data.map(row => row.sources.fossil_gas.avg_percent);
+              const ctx2 = document.getElementById('percentChart').getContext('2d');
+              new Chart(ctx2, {
+                type: 'line',
+                data: {
+                  labels: percentLabels,
+                  datasets: [
+                    { label: 'Solar (% of Total)', data: solarPercent, borderColor: '#f9c846', backgroundColor: '#f9c84622', fill: false },
+                    { label: 'Wind Onshore (% of Total)', data: windPercent, borderColor: '#4a90e2', backgroundColor: '#4a90e222', fill: false },
+                    { label: 'Wind Offshore (% of Total)', data: windOffshorePercent, borderColor: '#00b894', backgroundColor: '#00b89422', fill: false },
+                    { label: 'Gas (% of Total)', data: gasPercent, borderColor: '#e17055', backgroundColor: '#e1705522', fill: false }
+                  ]
+                },
+                options: {
+                  responsive: true,
+                  plugins: { legend: { position: 'top' } },
+                  scales: { x: { display: true, title: { display: true, text: 'Timestamp' } }, y: { display: true, title: { display: true, text: '% of Total' }, min: 0, max: 100 } }
+                }
+              });
+            });
+        })
+        .catch(err => {
+          document.getElementById('chart-container').innerHTML = '<p style="color:red">Failed to load data from API.</p>';
+          console.error(err);
+        });
+    </script>
+</body>
+</html> 

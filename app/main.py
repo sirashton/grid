@@ -19,6 +19,7 @@ from elexon_bm_api import ElexonBMAPI
 from data_gap_detector import DataGapDetector
 from utils.backfill_utils import run_backfill_cycle
 from migrate_deduplicate_and_unique import deduplicate_and_add_unique
+from utils.timestamp_utils import iso8601_to_sql_datetime
 
 # Configure logging
 logging.basicConfig(
@@ -205,7 +206,7 @@ class GridTracker:
                     # Check if data is fresh enough (< 2 hours old)
                     time_since_latest = current_time - latest_timestamp
                     
-                    if time_since_latest.total_seconds() < 7200:  # 2 hours
+                    if time_since_latest.total_seconds() < 1800:  # 30 minutes
                         print(f"Generation data is fresh ({time_since_latest.total_seconds()/3600:.1f} hours old), skipping collection")
                         logger.info(f"Generation data is fresh ({time_since_latest.total_seconds()/3600:.1f} hours old), skipping collection")
                         return True
@@ -242,8 +243,17 @@ class GridTracker:
             # Store data in database
             inserted_count = 0
             for point in data_points:
+                # Calculate total as the sum of all generation sources (ignore None)
+                total = sum(
+                    point[src] for src in [
+                        'biomass', 'fossil_gas', 'fossil_hard_coal', 'fossil_oil',
+                        'hydro_pumped_storage', 'hydro_run_of_river', 'nuclear',
+                        'other', 'solar', 'wind_offshore', 'wind_onshore'
+                    ] if point[src] is not None
+                )
                 success = self.db.insert_generation_data(
                     timestamp=point['timestamp'],
+                    timestamp_sql=iso8601_to_sql_datetime(point['timestamp']),
                     settlement_period=point['settlement_period'],
                     biomass=point['biomass'],
                     fossil_gas=point['fossil_gas'],
@@ -255,7 +265,8 @@ class GridTracker:
                     other=point['other'],
                     solar=point['solar'],
                     wind_offshore=point['wind_offshore'],
-                    wind_onshore=point['wind_onshore']
+                    wind_onshore=point['wind_onshore'],
+                    total=total
                 )
                 if success:
                     inserted_count += 1
@@ -480,8 +491,17 @@ class GridTracker:
                         # Store the data
                         inserted_count = 0
                         for point in data_points:
+                            # Calculate total as the sum of all generation sources (ignore None)
+                            total = sum(
+                                point[src] for src in [
+                                    'biomass', 'fossil_gas', 'fossil_hard_coal', 'fossil_oil',
+                                    'hydro_pumped_storage', 'hydro_run_of_river', 'nuclear',
+                                    'other', 'solar', 'wind_offshore', 'wind_onshore'
+                                ] if point[src] is not None
+                            )
                             success = self.db.insert_generation_data(
                                 timestamp=point['timestamp'],
+                                timestamp_sql=iso8601_to_sql_datetime(point['timestamp']),
                                 settlement_period=point['settlement_period'],
                                 biomass=point['biomass'],
                                 fossil_gas=point['fossil_gas'],
@@ -493,7 +513,8 @@ class GridTracker:
                                 other=point['other'],
                                 solar=point['solar'],
                                 wind_offshore=point['wind_offshore'],
-                                wind_onshore=point['wind_onshore']
+                                wind_onshore=point['wind_onshore'],
+                                total=total
                             )
                             if success:
                                 inserted_count += 1

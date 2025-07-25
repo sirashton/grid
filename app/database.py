@@ -280,6 +280,14 @@ class Database:
                 cursor = conn.cursor()
                 cursor.execute(sql, tuple(kwargs.values()))
                 conn.commit()
+            # Query the database to check if the data was inserted
+            cursor.execute("SELECT * FROM generation_30min_data WHERE timestamp = ?", (kwargs['timestamp'],))
+            result = cursor.fetchone()
+            if result:
+                print(f"[DB] Data inserted successfully: {result}")
+            else:
+                print(f"[DB] Data not inserted: {kwargs['timestamp']}")
+                return False
             return True
         except Exception as e:
             print(f"[DB] Failed to insert/update generation data: {e}")

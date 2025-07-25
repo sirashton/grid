@@ -10,12 +10,31 @@ from typing import Optional
 import json
 import sqlite3
 from datetime import datetime
+from fastapi.middleware.cors import CORSMiddleware
 
-API_VERSION = "0.1.2"
+API_VERSION = "0.1.3"
 
 print(f"[Grid Tracker API] Starting up. Version: {API_VERSION}")
 
 app = FastAPI(title="Grid Tracker API (Sketch)", version=API_VERSION)
+
+origins = [
+    "http://localhost:8080",
+    "http://127.0.0.1:8080",
+    "http://localhost",
+    "http://188.166.155.100",
+    "http://188.166.155.100:8080",
+    "http://grid.gathered.consulting",
+    "https://grid.gathered.consulting"
+]
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=origins,
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 
 # --- 1. Health Check Endpoint ---
 # @app.get("/api/health")

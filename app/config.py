@@ -14,7 +14,7 @@ class Config:
     
     # Timing intervals (in seconds)
     CARBON_INTENSITY_COLLECTION_INTERVAL = 60  # x seconds
-    ELEXON_BM_REPORTS_COLLECTION_INTERVAL = 3600  # 1 hour
+    ELEXON_BM_REPORTS_COLLECTION_INTERVAL = 60  # 1 hour
     NESO_DATA_PORTAL_COLLECTION_INTERVAL = 3600  # 1 hour
     HEALTH_CHECK_INTERVAL = 300  # 5 minutes
     MAIN_LOOP_INTERVAL = 10  # seconds
